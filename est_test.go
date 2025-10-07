@@ -295,6 +295,8 @@ func TestReenroll(t *testing.T) {
 	s, newTestClient := newTestServer(t)
 	defer s.Close()
 
+	client := newTestClient()
+
 	altKey := mustGenerateECPrivateKey(t)
 
 	var testcases = []struct {
@@ -380,10 +382,6 @@ func TestReenroll(t *testing.T) {
 		tc := tc
 
 		t.Run(tc.name, func(t *testing.T) {
-			// Create test EST client.
-			client := newTestClient()
-			client.PrivateKey = tc.key
-
 			// Get CA certificates before setting additional path segment,
 			// which may otherwise trigger errors.
 			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -404,6 +402,7 @@ func TestReenroll(t *testing.T) {
 			}
 
 			// Reenroll.
+			client.PrivateKey = tc.key
 			client.Certificates = append([]*x509.Certificate{got}, cacerts...)
 			if tc.certs != nil {
 				client.Certificates = tc.certs
@@ -601,8 +600,6 @@ func TestTPMEnroll(t *testing.T) {
 			// Request an EK certificate via normal enrollment.
 			ek := mustGenerateRSAPrivateKey(t)
 			csr := mustCreateCertificateRequest(t, ek, "Test TPM Device", nil)
-
-			client.PrivateKey = ek
 			ekcert, err := client.Enroll(ctx, csr)
 			if err != nil {
 				t.Fatalf("failed to enroll for EK certificate: %v", err)
