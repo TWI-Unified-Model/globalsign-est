@@ -212,7 +212,6 @@ func TestEnroll(t *testing.T) {
 			defer s.Close()
 
 			client := newTestClient()
-			client.PrivateKey = tc.key
 
 			// Get CA certificates before setting additional path segment,
 			// which may otherwise trigger errors.
@@ -382,6 +381,8 @@ func TestReenroll(t *testing.T) {
 		tc := tc
 
 		t.Run(tc.name, func(t *testing.T) {
+			// Create test EST server and client.
+
 			// Get CA certificates before setting additional path segment,
 			// which may otherwise trigger errors.
 			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -922,7 +923,6 @@ func newTestServer(t *testing.T) (*httptest.Server, func() *est.Client) {
 				Leaf:        serverCert,
 			},
 		},
-		MaxVersion: tls.VersionTLS12,
 	}
 
 	s.StartTLS()

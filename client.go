@@ -492,7 +492,8 @@ func (c *Client) newRequest(
 	return req, err
 }
 
-// Creates and returns a new CSR where the challenge password attribute contains the Tls-unique value base64 encoded.
+// addChallengePassword returns a new CSR based on the input csr.
+// The challenge password corresponds to the tls-unique value base64 encoded (only in TLS 1.2)
 func (c *Client) addChallengePassword(csr []byte, challengePassword string) ([]byte, error) {
 	if challengePassword == "" {
 		return csr, nil
