@@ -499,7 +499,11 @@ func (c *Client) addChallengePassword(csr []byte, challengePassword string) ([]b
 		return csr, nil
 	}
 
-	stdCsr, _ := x509.ParseCertificateRequest(csr)
+	stdCsr, err := x509.ParseCertificateRequest(csr)
+	if err != nil {
+		return nil, err
+	}
+
 	cr := x509util.CertificateRequest{
 		CertificateRequest: *stdCsr,
 		ChallengePassword:  challengePassword,
