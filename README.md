@@ -82,6 +82,19 @@ Using a configuration file, we can enroll with a private key resident on a
 hardware module, such as a hardware security module (HSM) or a Trusted Platform
 Module 2.0 (TPM) device. Refer to the documentation for more details.
 
+### Enforcing proof of possession
+
+If one would like to enforce the PoP as defined in [RFC 7030 section 3.5](https://www.rfc-editor.org/rfc/rfc7030#section-3.5), we have to pass the signing key to EST client so it can include the challenge password in the CSR and then sign it once again.  
+
+    user@host:$ estclient enroll -server localhost:8443 -explicit anchor.pem -csr csr.pem -signingkey key.pem -out cert.pem
+
+Reminder,
+
+* the `tls-unique` value mentioned in RFC 7030 is specific to TLS v1.2
+* the options `-key` and `-signingkey` are not necessarily the same
+  * `-key` is used for mTLS purpose like during an initial enroll
+  * `-signingkey` is the key signing the CSR and therefore the one to be enrolled
+
 ### Enrolling with a server-generated private key
 
 If we're unable or unwilling to create our own private key, the EST server can
