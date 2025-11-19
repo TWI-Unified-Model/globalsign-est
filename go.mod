@@ -1,6 +1,6 @@
 module github.com/globalsign/est
 
-go 1.22.1
+go 1.23.0
 
 require (
 	github.com/ThalesIgnite/crypto11 v1.2.1
@@ -10,7 +10,7 @@ require (
 	github.com/google/go-tpm v0.9.6
 	github.com/smallstep/scep v0.0.0-20250318231241-a25cabb69492
 	go.mozilla.org/pkcs7 v0.0.0-20200128120323-432b2356ecb1
-	golang.org/x/crypto v0.33.0
+	golang.org/x/crypto v0.35.0
 	golang.org/x/time v0.0.0-20210220033141-f8bda1e9f3ba
 )
 
