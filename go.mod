@@ -1,6 +1,6 @@
 module github.com/globalsign/est
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/ThalesIgnite/crypto11 v1.2.1
@@ -10,7 +10,7 @@ require (
 	github.com/google/go-tpm v0.9.6
 	github.com/smallstep/scep v0.0.0-20250318231241-a25cabb69492
 	go.mozilla.org/pkcs7 v0.0.0-20200128120323-432b2356ecb1
-	golang.org/x/crypto v0.45.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/time v0.0.0-20210220033141-f8bda1e9f3ba
 )
 
@@ -18,6 +18,6 @@ require (
 	github.com/miekg/pkcs11 v1.0.3-0.20190429190417-a667d056470f // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/thales-e-security/pool v0.0.1 // indirect
-	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/term v0.37.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
 )
