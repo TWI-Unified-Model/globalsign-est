@@ -1,0 +1,21 @@
+{
+  "mock_ca": {
+    "certificates": "/etc/est/certs/ca-certificates.pem",
+    "private_key": "/etc/est/certs/ca-key.pem"
+  },
+  "tls": {
+    "listen_address": ":8443",
+    "certificates": "/etc/est/certs/server-certificates.pem",
+    "private_key": "/etc/est/certs/server-key.pem",
+    "client_cas": [
+      "/etc/est/certs/client-ca.pem"
+    ]
+  },
+  "allowed_hosts": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "healthcheck_password": "replace-with-a-local-secret",
+  "rate_limit": 150,
+  "timeout": 30
+}
