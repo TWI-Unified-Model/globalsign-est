@@ -23,14 +23,25 @@ import (
 
 // URI constants.
 const (
-	cacertsEndpoint      = "/cacerts"
-	csrattrsEndpoint     = "/csrattrs"
-	enrollEndpoint       = "/simpleenroll"
-	estPathPrefix        = "/.well-known/est"
-	healthCheckEndpoint  = "/healthcheck"
-	reenrollEndpoint     = "/simplereenroll"
-	serverkeygenEndpoint = "/serverkeygen"
-	tpmenrollEndpoint    = "/tpmenroll"
+	attestEnrollEndpoint   = "/attest-enroll"
+	attestInitiateEndpoint = "/attest-initiate"
+	attestRetrieveEndpoint = "/attest-retrieve"
+	cacertsEndpoint        = "/cacerts"
+	csrattrsEndpoint       = "/csrattrs"
+	enrollEndpoint         = "/simpleenroll"
+	estPathPrefix          = "/.well-known/est"
+	healthCheckEndpoint    = "/healthcheck"
+	reenrollEndpoint       = "/simplereenroll"
+	serverkeygenEndpoint   = "/serverkeygen"
+	tpmenrollEndpoint      = "/tpmenroll"
+)
+
+// Query parameter names for attest-initiate. TACRA requires the target and
+// credential type to be validated, which the EST draft's parameterless GET
+// cannot convey.
+const (
+	attestCredentialTypeParam = "credential_type"
+	attestTargetParam         = "target"
 )
 
 // HTTP header and MIME type constants.

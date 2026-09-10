@@ -220,9 +220,16 @@ func main() {
 		return nil
 	}
 
+	// Wrap the mock CA with mock attested credential acquisition support.
+	var attestTargets []mockca.TargetPolicy
+	if cfg.Attest != nil {
+		attestTargets = cfg.Attest.Targets
+	}
+	attestedCA := mockca.NewAttested(ca, attestTargets)
+
 	// Create server mux.
 	r, err := est.NewRouter(&est.ServerConfig{
-		CA:             ca,
+		CA:             attestedCA,
 		Logger:         logger,
 		AllowedHosts:   cfg.AllowedHosts,
 		Timeout:        time.Duration(cfg.Timeout) * time.Second,

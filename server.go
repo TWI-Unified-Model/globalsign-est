@@ -85,6 +85,9 @@ const (
 // Log field and message constants.
 const (
 	logFieldError                 = "Error"
+	logMsgAttestEnrollFailed      = "failed to complete attested enrollment"
+	logMsgAttestInitiateFailed    = "failed to initiate attested credential acquisition"
+	logMsgAttestRetrieveFailed    = "failed to complete attested retrieval"
 	logMsgCACertsFailed           = "failed to retrieve CA certificates"
 	logMsgContentTypeInvalid      = "invalid content-type"
 	logMsgCSRAttrsFailed          = "failed to retrieve CSR attributes"
@@ -194,6 +197,20 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 			requireBasicAuth(cfg.CheckBasicAuth, true),
 		).Post(tpmenrollEndpoint, tpmenroll)
 
+		r.Get(attestInitiateEndpoint, attestInitiate)
+
+		r.With(
+			requireContentType(mimeTypeJSON),
+		).With(
+			requireBasicAuth(cfg.CheckBasicAuth, true),
+		).Post(attestEnrollEndpoint, attestEnroll)
+
+		r.With(
+			requireContentType(mimeTypeJSON),
+		).With(
+			requireBasicAuth(cfg.CheckBasicAuth, true),
+		).Post(attestRetrieveEndpoint, attestRetrieve)
+
 		// Endpoints with additional path segment.
 		r.Route(fmt.Sprintf("/{%s}", apsParamName), func(r chi.Router) {
 			r.Get(cacertsEndpoint, cacerts)
@@ -224,6 +241,20 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 			).With(
 				requireBasicAuth(cfg.CheckBasicAuth, true),
 			).Post(tpmenrollEndpoint, tpmenroll)
+
+			r.Get(attestInitiateEndpoint, attestInitiate)
+
+			r.With(
+				requireContentType(mimeTypeJSON),
+			).With(
+				requireBasicAuth(cfg.CheckBasicAuth, true),
+			).Post(attestEnrollEndpoint, attestEnroll)
+
+			r.With(
+				requireContentType(mimeTypeJSON),
+			).With(
+				requireBasicAuth(cfg.CheckBasicAuth, true),
+			).Post(attestRetrieveEndpoint, attestRetrieve)
 		})
 	})
 
