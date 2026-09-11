@@ -18,10 +18,12 @@ package est
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
@@ -30,8 +32,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/go-chi/chi"
+	"github.com/veraison/eat"
+	"github.com/veraison/go-cose"
 )
 
 // Freshness kinds carried in AttestationInitiateResponse.FreshnessKind.
@@ -77,17 +83,20 @@ const (
 // baseline the specification will ultimately mandate.
 const EncECDHP256 = "ECDH-P256+HKDF-SHA256+A256GCM"
 
-// Mock TEE evidence identifiers. These values describe the non-production
-// evidence format and trust anchor used by the POC.
+// Mock TEE evidence identifiers. These values define the non-production EAT
+// profile appraised by the mock Verifier.
 const (
-	MockEvidenceFormat  = "twi-mock-tee"
-	MockEvidenceVersion = 1
+	MockEATProfileURI   = "https://twi.confidentialcomputing.io/tacra-est-mock/1.0.0"
+	MockEATMediaType    = "application/eat+cwt"
+	MockEATProfileType  = `application/eat+cwt; eat_profile="` + MockEATProfileURI + `"`
 	MockTEEType         = "mock-confidential-vm"
 	MockTEEProviderID   = "twi-mock-tee-provider"
 	MockTEESigningKeyID = "twi-mock-tee-key-1"
-	MockTEESignatureAlg = "Ed25519"
-	MockTEEWorkloadPCR  = "4"
-	MockTEEPlatformPCR  = "0"
+	MockTEEWorkloadPCR  = 4
+	MockTEEPlatformPCR  = 0
+
+	mockClaimPCRs          int64 = -70003
+	mockClaimFreshnessKind int64 = -70004
 )
 
 // Credential item types carried inside an EncryptedCredentialBundle.
@@ -192,120 +201,179 @@ type EncryptedCredentialBundle struct {
 	Ciphertext         []byte `json:"ciphertext"`
 }
 
-// MockEvidence is a non-production Evidence format used by this POC. Evidence
-// is an opaque byte string at the protocol level; this structure is only the
-// convention understood by the mock Verifier.
-type MockEvidence struct {
-	Format          string            `json:"format"`
-	Version         int               `json:"version"`
-	TEEType         string            `json:"tee_type"`
-	ProviderID      string            `json:"provider_id"`
-	SigningKeyID    string            `json:"signing_key_id"`
-	PCRs            map[string][]byte `json:"pcrs"`
-	FreshnessKind   string            `json:"freshness_kind"`
-	FreshnessHandle []byte            `json:"freshness_handle,omitempty"`
-	SignatureAlg    string            `json:"signature_alg"`
-	Signature       []byte            `json:"signature"`
+// MockEATClaims is the EAT claims set used by the non-production TEE profile.
+// Request parameters such as target, CSR and CEKpub are deliberately absent.
+type MockEATClaims struct {
+	Issuer        string           `cbor:"1,keyasint,omitempty"`
+	Subject       string           `cbor:"2,keyasint,omitempty"`
+	IssuedAt      int64            `cbor:"6,keyasint,omitempty"`
+	Nonce         *eat.Nonce       `cbor:"10,keyasint,omitempty"`
+	UEID          eat.UEID         `cbor:"256,keyasint,omitempty"`
+	HardwareModel []byte           `cbor:"259,keyasint,omitempty"`
+	OemBoot       *bool            `cbor:"262,keyasint,omitempty"`
+	DebugStatus   *eat.Debug       `cbor:"263,keyasint,omitempty"`
+	Profile       *eat.Profile     `cbor:"265,keyasint,omitempty"`
+	BootCount     *uint            `cbor:"267,keyasint,omitempty"`
+	BootSeed      []byte           `cbor:"268,keyasint,omitempty"`
+	SoftwareName  *eat.StringOrURI `cbor:"270,keyasint,omitempty"`
+	PCRs          map[int][]byte   `cbor:"-70003,keyasint"`
+	FreshnessKind string           `cbor:"-70004,keyasint"`
 }
 
-type mockEvidenceSignedClaims struct {
-	Format          string            `json:"format"`
-	Version         int               `json:"version"`
-	TEEType         string            `json:"tee_type"`
-	ProviderID      string            `json:"provider_id"`
-	SigningKeyID    string            `json:"signing_key_id"`
-	PCRs            map[string][]byte `json:"pcrs"`
-	FreshnessKind   string            `json:"freshness_kind"`
-	FreshnessHandle []byte            `json:"freshness_handle,omitempty"`
-	SignatureAlg    string            `json:"signature_alg"`
-}
-
-func (e MockEvidence) signedClaims() mockEvidenceSignedClaims {
-	return mockEvidenceSignedClaims{
-		Format:          e.Format,
-		Version:         e.Version,
-		TEEType:         e.TEEType,
-		ProviderID:      e.ProviderID,
-		SigningKeyID:    e.SigningKeyID,
-		PCRs:            e.PCRs,
-		FreshnessKind:   e.FreshnessKind,
-		FreshnessHandle: e.FreshnessHandle,
-		SignatureAlg:    e.SignatureAlg,
-	}
-}
-
-func mockTEEKey() ed25519.PrivateKey {
-	seed := sha256.Sum256([]byte("twi mock TEE provider signing key v1"))
-	return ed25519.NewKeyFromSeed(seed[:])
-}
-
-func mockPCRs() map[string][]byte {
+func mockPCRs() map[int][]byte {
 	platform := sha256.Sum256([]byte("twi mock confidential platform v1"))
 	workload := sha256.Sum256([]byte("twi-poc-workload"))
 
-	return map[string][]byte{
+	return map[int][]byte{
 		MockTEEPlatformPCR: platform[:],
 		MockTEEWorkloadPCR: workload[:],
 	}
 }
 
-// NewMockEvidence returns signed, non-production TEE evidence containing the
-// POC measurements and only the freshness fields supplied by attest-initiate.
-func NewMockEvidence(freshnessKind string, freshnessHandle []byte) (MockEvidence, error) {
-	evidence := MockEvidence{
-		Format:          MockEvidenceFormat,
-		Version:         MockEvidenceVersion,
-		TEEType:         MockTEEType,
-		ProviderID:      MockTEEProviderID,
-		SigningKeyID:    MockTEESigningKeyID,
-		PCRs:            mockPCRs(),
-		FreshnessKind:   freshnessKind,
-		FreshnessHandle: append([]byte(nil), freshnessHandle...),
-		SignatureAlg:    MockTEESignatureAlg,
+// NewMockEvidence returns a CBOR COSE_Sign1 EAT signed by the supplied mock
+// provider key. The provider retains ownership of the private key.
+func NewMockEvidence(signer crypto.Signer, freshnessKind string, freshnessHandle []byte) ([]byte, error) {
+	ecKey, ok := signer.(*ecdsa.PrivateKey)
+	if !ok || ecKey.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("mock TEE signer must be an ECDSA P-256 private key")
 	}
 
-	claims, err := json.Marshal(evidence.signedClaims())
+	profile, err := eat.NewProfile(MockEATProfileURI)
 	if err != nil {
-		return MockEvidence{}, fmt.Errorf("failed to marshal mock TEE evidence: %w", err)
+		return nil, fmt.Errorf("create mock EAT profile: %w", err)
 	}
-	evidence.Signature = ed25519.Sign(mockTEEKey(), claims)
-
-	return evidence, nil
+	var software eat.StringOrURI
+	if err := software.FromString("twi-poc-workload"); err != nil {
+		return nil, fmt.Errorf("create mock software claim: %w", err)
+	}
+	nonce := eat.Nonce{}
+	switch freshnessKind {
+	case FreshnessPresentNonce:
+		if err := nonce.Add(freshnessHandle); err != nil {
+			return nil, fmt.Errorf("create mock EAT nonce: %w", err)
+		}
+	case FreshnessAbsentNone:
+		if len(freshnessHandle) != 0 {
+			return nil, fmt.Errorf("freshness handle must be absent for absent-none")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported freshness kind %q", freshnessKind)
+	}
+	oemBoot := true
+	debug := eat.Debug(eat.DebugDisabledSinceBoot)
+	bootCount := uint(1)
+	ueidHash := sha256.Sum256([]byte("twi mock TEE UEID v1"))
+	ueid := append(eat.UEID{0x01}, ueidHash[:]...)
+	bootSeed := sha256.Sum256([]byte("twi mock TEE boot seed v1"))
+	claims := MockEATClaims{
+		Issuer:        MockTEEProviderID,
+		Subject:       "twi-poc-workload",
+		IssuedAt:      time.Now().Unix(),
+		UEID:          ueid,
+		HardwareModel: []byte(MockTEEType),
+		OemBoot:       &oemBoot,
+		DebugStatus:   &debug,
+		Profile:       profile,
+		BootCount:     &bootCount,
+		BootSeed:      bootSeed[:],
+		SoftwareName:  &software,
+		PCRs:          mockPCRs(),
+		FreshnessKind: freshnessKind,
+	}
+	if freshnessKind == FreshnessPresentNonce {
+		claims.Nonce = &nonce
+	}
+	payload, err := cbor.Marshal(claims)
+	if err != nil {
+		return nil, fmt.Errorf("encode mock EAT claims: %w", err)
+	}
+	coseSigner, err := cose.NewSigner(cose.AlgorithmES256, signer)
+	if err != nil {
+		return nil, fmt.Errorf("create mock COSE signer: %w", err)
+	}
+	headers := cose.Headers{
+		Protected: cose.ProtectedHeader{
+			cose.HeaderLabelAlgorithm:   cose.AlgorithmES256,
+			cose.HeaderLabelContentType: MockEATMediaType,
+		},
+		Unprotected: cose.UnprotectedHeader{cose.HeaderLabelKeyID: []byte(MockTEESigningKeyID)},
+	}
+	return cose.Sign1(rand.Reader, coseSigner, headers, payload, nil)
 }
 
-// VerifyMockEvidence validates the mock provider signature and the expected
-// POC PCR measurements. The caller remains responsible for comparing the
-// signed freshness fields with the corresponding request.
-func VerifyMockEvidence(evidence MockEvidence) error {
-	if evidence.Format != MockEvidenceFormat ||
-		evidence.Version != MockEvidenceVersion ||
-		evidence.TEEType != MockTEEType ||
-		evidence.ProviderID != MockTEEProviderID ||
-		evidence.SigningKeyID != MockTEESigningKeyID ||
-		evidence.SignatureAlg != MockTEESignatureAlg {
-		return fmt.Errorf("unsupported mock TEE evidence metadata")
+// VerifyMockEvidence verifies the COSE signature and appraises the mock EAT
+// profile and PCR measurements. Freshness correlation remains the caller's
+// responsibility.
+func VerifyMockEvidence(evidence []byte, providerKey crypto.PublicKey) (*MockEATClaims, error) {
+	publicKey, ok := providerKey.(*ecdsa.PublicKey)
+	if !ok || publicKey.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("trusted mock TEE key must be an ECDSA P-256 public key")
 	}
-
-	claims, err := json.Marshal(evidence.signedClaims())
+	if len(evidence) == 0 || evidence[0] != 0xd2 {
+		return nil, fmt.Errorf("mock evidence is not tagged COSE_Sign1")
+	}
+	var message cose.Sign1Message
+	if err := message.UnmarshalCBOR(evidence); err != nil {
+		return nil, fmt.Errorf("decode mock COSE_Sign1: %w", err)
+	}
+	if algorithm, ok := message.Headers.Protected[cose.HeaderLabelAlgorithm]; !ok || algorithm != cose.AlgorithmES256 {
+		return nil, fmt.Errorf("mock COSE algorithm must be ES256")
+	}
+	if contentType, ok := message.Headers.Protected[cose.HeaderLabelContentType]; !ok || contentType != MockEATMediaType {
+		return nil, fmt.Errorf("mock COSE content type must be %s", MockEATMediaType)
+	}
+	keyID, ok := message.Headers.Unprotected[cose.HeaderLabelKeyID].([]byte)
+	if !ok || !bytes.Equal(keyID, []byte(MockTEESigningKeyID)) {
+		return nil, fmt.Errorf("untrusted mock TEE signing key ID")
+	}
+	verifier, err := cose.NewVerifier(cose.AlgorithmES256, publicKey)
 	if err != nil {
-		return fmt.Errorf("failed to marshal mock TEE evidence: %w", err)
+		return nil, fmt.Errorf("create mock COSE verifier: %w", err)
 	}
-	publicKey := mockTEEKey().Public().(ed25519.PublicKey)
-	if !ed25519.Verify(publicKey, claims, evidence.Signature) {
-		return fmt.Errorf("invalid mock TEE provider signature")
+	if err := message.Verify(nil, verifier); err != nil {
+		return nil, fmt.Errorf("invalid mock TEE provider signature: %w", err)
+	}
+	var claims MockEATClaims
+	if err := cbor.Unmarshal(message.Payload, &claims); err != nil {
+		return nil, fmt.Errorf("decode mock EAT claims: %w", err)
+	}
+	if claims.Profile == nil {
+		return nil, fmt.Errorf("mock EAT profile is missing")
+	}
+	profileURI, err := claims.Profile.Get()
+	if err != nil {
+		return nil, fmt.Errorf("decode mock EAT profile: %w", err)
+	}
+	if claims.Issuer != MockTEEProviderID ||
+		claims.Subject != "twi-poc-workload" ||
+		claims.IssuedAt <= 0 ||
+		profileURI != MockEATProfileURI ||
+		!bytes.Equal(claims.HardwareModel, []byte(MockTEEType)) ||
+		claims.OemBoot == nil || !*claims.OemBoot ||
+		claims.DebugStatus == nil || *claims.DebugStatus != eat.DebugDisabledSinceBoot ||
+		claims.BootCount == nil || *claims.BootCount != 1 ||
+		claims.SoftwareName == nil {
+		return nil, fmt.Errorf("unsupported mock EAT profile")
+	}
+	if err := claims.UEID.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid mock EAT UEID: %w", err)
+	}
+	expectedBootSeed := sha256.Sum256([]byte("twi mock TEE boot seed v1"))
+	if !bytes.Equal(claims.BootSeed, expectedBootSeed[:]) {
+		return nil, fmt.Errorf("mock TEE boot seed policy mismatch")
 	}
 
 	expectedPCRs := mockPCRs()
-	if len(evidence.PCRs) != len(expectedPCRs) {
-		return fmt.Errorf("mock TEE PCR policy mismatch")
+	if len(claims.PCRs) != len(expectedPCRs) {
+		return nil, fmt.Errorf("mock TEE PCR policy mismatch")
 	}
 	for register, expected := range expectedPCRs {
-		if !bytes.Equal(evidence.PCRs[register], expected) {
-			return fmt.Errorf("mock TEE PCR %s policy mismatch", register)
+		if !bytes.Equal(claims.PCRs[register], expected) {
+			return nil, fmt.Errorf("mock TEE PCR %d policy mismatch", register)
 		}
 	}
 
-	return nil
+	return &claims, nil
 }
 
 // CSRHash returns the SHA-256 digest of a DER-encoded PKCS#10 CSR, for use as

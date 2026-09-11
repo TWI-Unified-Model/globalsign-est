@@ -38,7 +38,8 @@ type config struct {
 // attestConfig contains the attested credential acquisition configuration.
 // The CAS decides the credential acquisition mechanism per target.
 type attestConfig struct {
-	Targets []mockca.TargetPolicy `json:"targets,omitempty"`
+	Targets                  []mockca.TargetPolicy `json:"targets,omitempty"`
+	TrustedProviderPublicKey string                `json:"trusted_provider_public_key"`
 }
 
 // mockCAConfig contains the mock CA configuration.
@@ -92,6 +93,7 @@ const sample = `{
         "[::1]"
     ],
     "attest": {
+		"trusted_provider_public_key": "/path/to/mock/provider-public-key.pem",
         "targets": [
             {
                 "name": "RUP-workload-1",

@@ -18,6 +18,7 @@ package mockca
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -25,7 +26,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -79,7 +79,8 @@ type TargetPolicy struct {
 type AttestedCA struct {
 	*MockCA
 
-	targets map[string]TargetPolicy
+	targets            map[string]TargetPolicy
+	trustedProviderKey crypto.PublicKey
 
 	mu     sync.Mutex
 	nonces map[string]*nonceState
@@ -88,7 +89,7 @@ type AttestedCA struct {
 
 // NewAttested wraps a MockCA with mock attestation support. If targets is
 // empty, a default enroll target and retrieve target are configured.
-func NewAttested(ca *MockCA, targets []TargetPolicy) *AttestedCA {
+func NewAttested(ca *MockCA, targets []TargetPolicy, trustedProviderKey crypto.PublicKey) *AttestedCA {
 	policies := make(map[string]TargetPolicy)
 	for _, t := range targets {
 		if t.Name == "" {
@@ -112,10 +113,11 @@ func NewAttested(ca *MockCA, targets []TargetPolicy) *AttestedCA {
 	}
 
 	return &AttestedCA{
-		MockCA:  ca,
-		targets: policies,
-		nonces:  make(map[string]*nonceState),
-		groups:  make(map[string]*est.CredentialBundle),
+		MockCA:             ca,
+		targets:            policies,
+		trustedProviderKey: trustedProviderKey,
+		nonces:             make(map[string]*nonceState),
+		groups:             make(map[string]*est.CredentialBundle),
 	}
 }
 
@@ -211,7 +213,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 		FreshnessKind:      est.FreshnessPresentNonce,
 		Handle:             handle,
 		ExpiresIn:          int(nonceLifetime.Seconds()),
-		AcceptableEvidence: []string{"application/vnd.twi.mock-evidence+json"},
+		AcceptableEvidence: []string{est.MockEATProfileType},
 		Mechanism:          mechanism,
 	}
 
@@ -276,15 +278,8 @@ func (ca *AttestedCA) verifyEvidence(
 	handle []byte,
 	evidence []byte,
 ) (*attestationResults, error) {
-	var ev est.MockEvidence
-	if err := json.Unmarshal(evidence, &ev); err != nil {
-		return nil, caError{
-			status: http.StatusForbidden,
-			desc:   "attestation failed: malformed evidence",
-		}
-	}
-
-	if err := est.VerifyMockEvidence(ev); err != nil {
+	claims, err := est.VerifyMockEvidence(evidence, ca.trustedProviderKey)
+	if err != nil {
 		return nil, caError{
 			status: http.StatusForbidden,
 			desc:   fmt.Sprintf("attestation failed: %v", err),
@@ -292,7 +287,7 @@ func (ca *AttestedCA) verifyEvidence(
 	}
 
 	// Evidence-to-Freshness binding.
-	if ev.FreshnessKind != freshnessKind {
+	if claims.FreshnessKind != freshnessKind {
 		return nil, caError{
 			status: http.StatusForbidden,
 			desc:   "attestation failed: evidence freshness kind mismatch",
@@ -301,7 +296,8 @@ func (ca *AttestedCA) verifyEvidence(
 
 	switch freshnessKind {
 	case est.FreshnessPresentNonce:
-		if !bytes.Equal(ev.FreshnessHandle, handle) {
+		if claims.Nonce == nil || claims.Nonce.Len() != 1 ||
+			!bytes.Equal(claims.Nonce.GetI(0), handle) {
 			return nil, caError{
 				status: http.StatusForbidden,
 				desc:   "attestation failed: evidence not bound to handle",
@@ -312,7 +308,7 @@ func (ca *AttestedCA) verifyEvidence(
 		}
 
 	case est.FreshnessAbsentNone:
-		if len(handle) != 0 || len(ev.FreshnessHandle) != 0 {
+		if len(handle) != 0 || claims.Nonce != nil {
 			return nil, caError{
 				status: http.StatusBadRequest,
 				desc:   "handle must be absent for absent-none freshness",
@@ -326,7 +322,7 @@ func (ca *AttestedCA) verifyEvidence(
 		}
 	}
 
-	subject := ev.ProviderID + ":" + hex.EncodeToString(ev.PCRs[est.MockTEEWorkloadPCR])
+	subject := claims.Issuer + ":" + hex.EncodeToString(claims.PCRs[est.MockTEEWorkloadPCR])
 
 	return &attestationResults{
 		Subject:       subject,
