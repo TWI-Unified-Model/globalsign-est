@@ -268,34 +268,32 @@ type attestationResults struct {
 	PolicyVersion string
 }
 
-// verifyEvidence mocks the RATS Verifier. It checks that Evidence is bound to
-// the Freshness from attest-initiate and to the CSR key or CEKpub, and returns
+// verifyEvidence mocks the RATS Verifier. It validates the provider signature,
+// PCR policy and binding to the Freshness from attest-initiate, then returns
 // Attestation Results.
 func (ca *AttestedCA) verifyEvidence(
 	target, freshnessKind string,
 	handle []byte,
 	evidence []byte,
-	binding est.Binding,
-	csrDER []byte,
-) (*attestationResults, []byte, error) {
+) (*attestationResults, error) {
 	var ev est.MockEvidence
 	if err := json.Unmarshal(evidence, &ev); err != nil {
-		return nil, nil, caError{
+		return nil, caError{
 			status: http.StatusForbidden,
 			desc:   "attestation failed: malformed evidence",
 		}
 	}
 
-	if ev.Target != target {
-		return nil, nil, caError{
+	if err := est.VerifyMockEvidence(ev); err != nil {
+		return nil, caError{
 			status: http.StatusForbidden,
-			desc:   "attestation failed: evidence target mismatch",
+			desc:   fmt.Sprintf("attestation failed: %v", err),
 		}
 	}
 
 	// Evidence-to-Freshness binding.
 	if ev.FreshnessKind != freshnessKind {
-		return nil, nil, caError{
+		return nil, caError{
 			status: http.StatusForbidden,
 			desc:   "attestation failed: evidence freshness kind mismatch",
 		}
@@ -303,75 +301,38 @@ func (ca *AttestedCA) verifyEvidence(
 
 	switch freshnessKind {
 	case est.FreshnessPresentNonce:
-		if !bytes.Equal(ev.Handle, handle) {
-			return nil, nil, caError{
+		if !bytes.Equal(ev.FreshnessHandle, handle) {
+			return nil, caError{
 				status: http.StatusForbidden,
 				desc:   "attestation failed: evidence not bound to handle",
 			}
 		}
 		if err := ca.consumeHandle(target, handle); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 	case est.FreshnessAbsentNone:
-		if len(handle) != 0 || len(ev.Handle) != 0 {
-			return nil, nil, caError{
+		if len(handle) != 0 || len(ev.FreshnessHandle) != 0 {
+			return nil, caError{
 				status: http.StatusBadRequest,
 				desc:   "handle must be absent for absent-none freshness",
 			}
 		}
 
 	default:
-		return nil, nil, caError{
+		return nil, caError{
 			status: http.StatusBadRequest,
 			desc:   fmt.Sprintf("unsupported freshness kind %q", freshnessKind),
 		}
 	}
 
-	// Evidence-to-CSR or Evidence-to-CEK binding.
-	var cekPub []byte
-
-	switch binding.Method {
-	case est.BindingCSRHash:
-		if !bytes.Equal(ev.CSRHash, est.CSRHash(csrDER)) {
-			return nil, nil, caError{
-				status: http.StatusForbidden,
-				desc:   "attestation failed: evidence not bound to CSR",
-			}
-		}
-
-	case est.BindingCEKThumbprint:
-		if len(ev.CEKPub) == 0 {
-			return nil, nil, caError{
-				status: http.StatusForbidden,
-				desc:   "attestation failed: evidence does not carry CEKpub",
-			}
-		}
-		if !bytes.Equal(ev.CEKThumbprint, est.CEKThumbprint(ev.CEKPub)) {
-			return nil, nil, caError{
-				status: http.StatusForbidden,
-				desc:   "attestation failed: evidence not bound to CEKpub",
-			}
-		}
-		cekPub = ev.CEKPub
-
-	default:
-		return nil, nil, caError{
-			status: http.StatusBadRequest,
-			desc:   fmt.Sprintf("unsupported binding method %q", binding.Method),
-		}
-	}
-
-	subject := ev.Claims["workload"]
-	if subject == "" {
-		subject = target
-	}
+	subject := ev.ProviderID + ":" + hex.EncodeToString(ev.PCRs[est.MockTEEWorkloadPCR])
 
 	return &attestationResults{
 		Subject:       subject,
 		Target:        target,
 		PolicyVersion: attestPolicyVersion,
-	}, cekPub, nil
+	}, nil
 }
 
 // EnrollCredential forwards Evidence to the mock Verifier, then the CSR and
@@ -400,8 +361,12 @@ func (ca *AttestedCA) EnrollCredential(
 		return nil, caError{status: http.StatusBadRequest, desc: "invalid PKCS10 certificate signing request signature"}
 	}
 
-	if _, _, err := ca.verifyEvidence(
-		req.Target, req.FreshnessKind, req.Handle, req.Evidence, req.Binding, req.CSR,
+	if req.Binding.Method != est.BindingCSRHash {
+		return nil, caError{status: http.StatusBadRequest, desc: "unsupported enrollment binding method"}
+	}
+
+	if _, err := ca.verifyEvidence(
+		req.Target, req.FreshnessKind, req.Handle, req.Evidence,
 	); err != nil {
 		return nil, err
 	}
@@ -515,22 +480,18 @@ func (ca *AttestedCA) RetrieveCredential(
 		return nil, err
 	}
 
-	if req.Binding.Method == "" {
-		req.Binding.Method = est.BindingCEKThumbprint
+	if len(req.CEKPub) == 0 {
+		return nil, caError{status: http.StatusBadRequest, desc: "CEKpub is required"}
+	}
+	if req.Binding.Method != est.BindingCEKThumbprint {
+		return nil, caError{status: http.StatusBadRequest, desc: "unsupported retrieval binding method"}
 	}
 
-	res, cekPub, err := ca.verifyEvidence(
-		req.Target, req.FreshnessKind, req.Handle, req.Evidence, req.Binding, nil,
+	res, err := ca.verifyEvidence(
+		req.Target, req.FreshnessKind, req.Handle, req.Evidence,
 	)
 	if err != nil {
 		return nil, err
-	}
-
-	if len(cekPub) == 0 {
-		return nil, caError{
-			status: http.StatusForbidden,
-			desc:   "attestation results do not confirm a CEKpub binding",
-		}
 	}
 
 	gid := groupID(res, req.Profile)
@@ -540,7 +501,7 @@ func (ca *AttestedCA) RetrieveCredential(
 		return nil, err
 	}
 
-	sealed, err := est.SealCredentialBundle(bundle, cekPub, req.Handle, req.Profile, attestServerID)
+	sealed, err := est.SealCredentialBundle(bundle, req.CEKPub, req.Handle, req.Profile, attestServerID)
 	if err != nil {
 		return nil, caError{
 			status: http.StatusBadRequest,

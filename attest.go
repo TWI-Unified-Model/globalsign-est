@@ -16,10 +16,12 @@ limitations under the License.
 package est
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
@@ -61,12 +63,12 @@ const (
 	CredentialTypeWIT    = "wit"     // POP_CREDENTIAL_TYPE_WIT
 )
 
-// Evidence-to-CSR and Evidence-to-CEK binding methods.
+// Request-level CSR and CEK association methods.
 const (
-	// BindingCSRHash indicates Evidence contains H(csr_der).
+	// BindingCSRHash identifies the enrollment request's CSR hash association.
 	BindingCSRHash = "csr-hash"
 
-	// BindingCEKThumbprint indicates Evidence contains a thumbprint of CEKpub.
+	// BindingCEKThumbprint identifies the retrieval request's CEK association.
 	BindingCEKThumbprint = "cek-thumbprint"
 )
 
@@ -74,6 +76,19 @@ const (
 // EncryptedCredentialBundle to CEKpub. It is a POC stand-in for the HPKE
 // baseline the specification will ultimately mandate.
 const EncECDHP256 = "ECDH-P256+HKDF-SHA256+A256GCM"
+
+// Mock TEE evidence identifiers. These values describe the non-production
+// evidence format and trust anchor used by the POC.
+const (
+	MockEvidenceFormat  = "twi-mock-tee"
+	MockEvidenceVersion = 1
+	MockTEEType         = "mock-confidential-vm"
+	MockTEEProviderID   = "twi-mock-tee-provider"
+	MockTEESigningKeyID = "twi-mock-tee-key-1"
+	MockTEESignatureAlg = "Ed25519"
+	MockTEEWorkloadPCR  = "4"
+	MockTEEPlatformPCR  = "0"
+)
 
 // Credential item types carried inside an EncryptedCredentialBundle.
 const (
@@ -119,7 +134,7 @@ type AttestationInitiateResponse struct {
 	Mechanism          string   `json:"mode,omitempty"`
 }
 
-// Binding declares how Evidence is bound to the CSR key or to CEKpub.
+// Binding declares the request-level CSR or CEK association method.
 type Binding struct {
 	Method  string `json:"method"`
 	HashAlg string `json:"hash_alg,omitempty"`
@@ -144,6 +159,7 @@ type AttestedRetrievalRequest struct {
 	CredentialType string  `json:"credential_type,omitempty"`
 	FreshnessKind  string  `json:"freshness_kind"`
 	Handle         []byte  `json:"handle,omitempty"`
+	CEKPub         []byte  `json:"cek_pub"`
 	Evidence       []byte  `json:"evidence"`
 	Endorsements   []byte  `json:"endorsements,omitempty"`
 	Binding        Binding `json:"binding"`
@@ -180,13 +196,116 @@ type EncryptedCredentialBundle struct {
 // is an opaque byte string at the protocol level; this structure is only the
 // convention understood by the mock Verifier.
 type MockEvidence struct {
-	Target        string            `json:"target"`
-	FreshnessKind string            `json:"freshness_kind"`
-	Handle        []byte            `json:"handle,omitempty"`
-	CSRHash       []byte            `json:"csr_hash,omitempty"`
-	CEKPub        []byte            `json:"cek_pub,omitempty"`
-	CEKThumbprint []byte            `json:"cek_thumbprint,omitempty"`
-	Claims        map[string]string `json:"claims,omitempty"`
+	Format          string            `json:"format"`
+	Version         int               `json:"version"`
+	TEEType         string            `json:"tee_type"`
+	ProviderID      string            `json:"provider_id"`
+	SigningKeyID    string            `json:"signing_key_id"`
+	PCRs            map[string][]byte `json:"pcrs"`
+	FreshnessKind   string            `json:"freshness_kind"`
+	FreshnessHandle []byte            `json:"freshness_handle,omitempty"`
+	SignatureAlg    string            `json:"signature_alg"`
+	Signature       []byte            `json:"signature"`
+}
+
+type mockEvidenceSignedClaims struct {
+	Format          string            `json:"format"`
+	Version         int               `json:"version"`
+	TEEType         string            `json:"tee_type"`
+	ProviderID      string            `json:"provider_id"`
+	SigningKeyID    string            `json:"signing_key_id"`
+	PCRs            map[string][]byte `json:"pcrs"`
+	FreshnessKind   string            `json:"freshness_kind"`
+	FreshnessHandle []byte            `json:"freshness_handle,omitempty"`
+	SignatureAlg    string            `json:"signature_alg"`
+}
+
+func (e MockEvidence) signedClaims() mockEvidenceSignedClaims {
+	return mockEvidenceSignedClaims{
+		Format:          e.Format,
+		Version:         e.Version,
+		TEEType:         e.TEEType,
+		ProviderID:      e.ProviderID,
+		SigningKeyID:    e.SigningKeyID,
+		PCRs:            e.PCRs,
+		FreshnessKind:   e.FreshnessKind,
+		FreshnessHandle: e.FreshnessHandle,
+		SignatureAlg:    e.SignatureAlg,
+	}
+}
+
+func mockTEEKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("twi mock TEE provider signing key v1"))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func mockPCRs() map[string][]byte {
+	platform := sha256.Sum256([]byte("twi mock confidential platform v1"))
+	workload := sha256.Sum256([]byte("twi-poc-workload"))
+
+	return map[string][]byte{
+		MockTEEPlatformPCR: platform[:],
+		MockTEEWorkloadPCR: workload[:],
+	}
+}
+
+// NewMockEvidence returns signed, non-production TEE evidence containing the
+// POC measurements and only the freshness fields supplied by attest-initiate.
+func NewMockEvidence(freshnessKind string, freshnessHandle []byte) (MockEvidence, error) {
+	evidence := MockEvidence{
+		Format:          MockEvidenceFormat,
+		Version:         MockEvidenceVersion,
+		TEEType:         MockTEEType,
+		ProviderID:      MockTEEProviderID,
+		SigningKeyID:    MockTEESigningKeyID,
+		PCRs:            mockPCRs(),
+		FreshnessKind:   freshnessKind,
+		FreshnessHandle: append([]byte(nil), freshnessHandle...),
+		SignatureAlg:    MockTEESignatureAlg,
+	}
+
+	claims, err := json.Marshal(evidence.signedClaims())
+	if err != nil {
+		return MockEvidence{}, fmt.Errorf("failed to marshal mock TEE evidence: %w", err)
+	}
+	evidence.Signature = ed25519.Sign(mockTEEKey(), claims)
+
+	return evidence, nil
+}
+
+// VerifyMockEvidence validates the mock provider signature and the expected
+// POC PCR measurements. The caller remains responsible for comparing the
+// signed freshness fields with the corresponding request.
+func VerifyMockEvidence(evidence MockEvidence) error {
+	if evidence.Format != MockEvidenceFormat ||
+		evidence.Version != MockEvidenceVersion ||
+		evidence.TEEType != MockTEEType ||
+		evidence.ProviderID != MockTEEProviderID ||
+		evidence.SigningKeyID != MockTEESigningKeyID ||
+		evidence.SignatureAlg != MockTEESignatureAlg {
+		return fmt.Errorf("unsupported mock TEE evidence metadata")
+	}
+
+	claims, err := json.Marshal(evidence.signedClaims())
+	if err != nil {
+		return fmt.Errorf("failed to marshal mock TEE evidence: %w", err)
+	}
+	publicKey := mockTEEKey().Public().(ed25519.PublicKey)
+	if !ed25519.Verify(publicKey, claims, evidence.Signature) {
+		return fmt.Errorf("invalid mock TEE provider signature")
+	}
+
+	expectedPCRs := mockPCRs()
+	if len(evidence.PCRs) != len(expectedPCRs) {
+		return fmt.Errorf("mock TEE PCR policy mismatch")
+	}
+	for register, expected := range expectedPCRs {
+		if !bytes.Equal(evidence.PCRs[register], expected) {
+			return fmt.Errorf("mock TEE PCR %s policy mismatch", register)
+		}
+	}
+
+	return nil
 }
 
 // CSRHash returns the SHA-256 digest of a DER-encoded PKCS#10 CSR, for use as
