@@ -15,6 +15,13 @@
     "localhost",
     "127.0.0.1"
   ],
+  "attest": {
+    "trusted_provider_public_key": "/etc/est/certs/mock-tee-provider-public-key.pem",
+    "targets": [
+      { "name": "RUP-workload-1", "mechanism": "enroll" },
+      { "name": "RUP-workload-2", "mechanism": "retrieve" }
+    ]
+  },
   "healthcheck_password": "replace-with-a-local-secret",
   "rate_limit": 150,
   "timeout": 30

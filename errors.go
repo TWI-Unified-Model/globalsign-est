@@ -33,6 +33,14 @@ var (
 		status: http.StatusUnauthorized,
 		desc:   "authorization required",
 	}
+	errAttestNotSupported = &estError{
+		status: http.StatusNotImplemented,
+		desc:   "attested credential acquisition not supported by backing CA",
+	}
+	errInvalidJSON = &estError{
+		status: http.StatusBadRequest,
+		desc:   "malformed JSON request body",
+	}
 	errBodyParse = &estError{
 		status: http.StatusBadRequest,
 		desc:   "unable to parse request body",

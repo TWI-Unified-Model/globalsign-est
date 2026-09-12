@@ -17,12 +17,14 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,6 +48,26 @@ const (
 	healthCheckUsername = "healthcheck"
 	healthCheckEndpoint = "/healthcheck"
 )
+
+func loadProviderPublicKey(filename string) (crypto.PublicKey, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("read trusted provider public key: %w", err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf("trusted provider public key must be PKIX PUBLIC KEY PEM")
+	}
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse trusted provider public key: %w", err)
+	}
+	ecKey, ok := key.(*ecdsa.PublicKey)
+	if !ok || ecKey.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("trusted provider public key must be ECDSA P-256")
+	}
+	return ecKey, nil
+}
 
 func main() {
 	log.SetPrefix(fmt.Sprintf("%s: ", appName))
@@ -220,9 +242,19 @@ func main() {
 		return nil
 	}
 
+	// Wrap the mock CA with mock attested credential acquisition support.
+	var serverCA est.CA = ca
+	if cfg.Attest != nil {
+		trustedProviderKey, err := loadProviderPublicKey(cfg.Attest.TrustedProviderPublicKey)
+		if err != nil {
+			log.Fatalf("failed to load attestation trust anchor: %v", err)
+		}
+		serverCA = mockca.NewAttested(ca, cfg.Attest.Targets, trustedProviderKey)
+	}
+
 	// Create server mux.
 	r, err := est.NewRouter(&est.ServerConfig{
-		CA:             ca,
+		CA:             serverCA,
 		Logger:         logger,
 		AllowedHosts:   cfg.AllowedHosts,
 		Timeout:        time.Duration(cfg.Timeout) * time.Second,

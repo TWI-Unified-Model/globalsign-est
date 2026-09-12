@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+
+	"github.com/globalsign/est/internal/mockca"
 )
 
 // config contains the EST server configuration.
@@ -26,10 +28,18 @@ type config struct {
 	MockCA              *mockCAConfig `json:"mock_ca,omitempty"`
 	TLS                 *tlsConfig    `json:"tls,omitempty"`
 	AllowedHosts        []string      `json:"allowed_hosts,omitempty"`
+	Attest              *attestConfig `json:"attest,omitempty"`
 	HealthCheckPassword string        `json:"healthcheck_password"`
 	RateLimit           int           `json:"rate_limit"`
 	Timeout             int           `json:"timeout"`
 	Logfile             string        `json:"log_file"`
+}
+
+// attestConfig contains the attested credential acquisition configuration.
+// The CAS decides the credential acquisition mechanism per target.
+type attestConfig struct {
+	Targets                  []mockca.TargetPolicy `json:"targets,omitempty"`
+	TrustedProviderPublicKey string                `json:"trusted_provider_public_key"`
 }
 
 // mockCAConfig contains the mock CA configuration.
@@ -82,6 +92,19 @@ const sample = `{
         "127.0.0.1",
         "[::1]"
     ],
+    "attest": {
+		"trusted_provider_public_key": "/path/to/mock/provider-public-key.pem",
+        "targets": [
+            {
+                "name": "RUP-workload-1",
+                "mechanism": "enroll"
+            },
+            {
+                "name": "RUP-workload-2",
+                "mechanism": "retrieve"
+            }
+        ]
+    },
     "healthcheck_password": "xyzzy",
     "rate_limit": 150,
     "timeout": 30,
