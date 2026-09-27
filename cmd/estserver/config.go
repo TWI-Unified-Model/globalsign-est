@@ -97,11 +97,14 @@ const sample = `{
         "targets": [
             {
                 "name": "RUP-workload-1",
-                "mechanism": "enroll"
+                "mechanism": "enroll",
+                "freshness_kind": "present-nonce"
             },
             {
                 "name": "RUP-workload-2",
-                "mechanism": "retrieve"
+                "mechanism": "retrieve",
+                "freshness_kind": "present-epoch",
+                "epoch_marker": "deployment-epoch-1"
             }
         ]
     },
