@@ -49,21 +49,27 @@ const (
 	attestServerID      = "twi-globalsign-est"
 	nonceLifetime       = time.Second * 300
 	nonceSize           = 32
+	defaultTimestampAge = 300
+	trustedClockSkew    = 5 * time.Second
 )
 
 // nonceState tracks an issued present-nonce Handle.
 type nonceState struct {
-	target  string
-	expires time.Time
-	used    bool
+	target         string
+	credentialType string
+	expires        time.Time
+	used           bool
 }
 
 // TargetPolicy is the CAS policy for one RATS-unaware Relying Party. Per TACRA
 // the CAS — not the Attester and not the credential type — decides the
 // credential acquisition mechanism, and it may differ per target.
 type TargetPolicy struct {
-	Name      string `json:"name"`
-	Mechanism string `json:"mechanism"`
+	Name          string `json:"name"`
+	Mechanism     string `json:"mechanism"`
+	FreshnessKind string `json:"freshness_kind,omitempty"`
+	EpochMarker   string `json:"epoch_marker,omitempty"`
+	MaxAge        int    `json:"max_age,omitempty"`
 
 	// CredentialTypes optionally restricts which credential types the CAS can
 	// provision for this target. An empty list accepts any type.
@@ -182,9 +188,23 @@ func (ca *AttestedCA) requireMechanism(target, credentialType, want string) erro
 	return nil
 }
 
-// InitiateRemoteAttestation acts as a conduit to the mock Verifier, which
-// originates a single-use present-nonce Handle. The mechanism is decided here
-// by the CAS, opaquely to the Attester.
+func policyFreshnessKind(policy TargetPolicy) string {
+	if policy.FreshnessKind == "" {
+		return est.FreshnessPresentNonce
+	}
+	return policy.FreshnessKind
+}
+
+func policyMaxAge(policy TargetPolicy) int {
+	if policy.MaxAge > 0 {
+		return policy.MaxAge
+	}
+	return defaultTimestampAge
+}
+
+// InitiateRemoteAttestation acts as a conduit to the mock Verifier or Relying
+// Party that selects freshness. The mechanism and freshness policy are
+// decided per target by the CAS, opaquely to the Attester.
 func (ca *AttestedCA) InitiateRemoteAttestation(
 	ctx context.Context,
 	target, credentialType, aps string,
@@ -195,33 +215,63 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 		return nil, err
 	}
 
-	handle := make([]byte, nonceSize)
-	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
-		return nil, fmt.Errorf("failed to generate nonce: %w", err)
-	}
-
-	ca.mu.Lock()
-	ca.nonces[hex.EncodeToString(handle)] = &nonceState{
-		target:  target,
-		expires: time.Now().Add(nonceLifetime),
-	}
-	ca.mu.Unlock()
-
 	mechanism := policy.Mechanism
+	freshnessKind := policyFreshnessKind(policy)
 
 	resp := &est.AttestationInitiateResponse{
-		FreshnessKind:      est.FreshnessPresentNonce,
-		Handle:             handle,
-		ExpiresIn:          int(nonceLifetime.Seconds()),
+		FreshnessKind:      freshnessKind,
+		ServerID:           attestServerID,
 		AcceptableEvidence: []string{est.MockEATProfileType},
+		RequiredBindings:   []string{est.BindingInput},
 		Mechanism:          mechanism,
 	}
 
+	switch freshnessKind {
+	case est.FreshnessPresentNonce:
+		handle := make([]byte, nonceSize)
+		if _, err := io.ReadFull(rand.Reader, handle); err != nil {
+			return nil, fmt.Errorf("failed to generate nonce: %w", err)
+		}
+
+		ca.mu.Lock()
+		ca.nonces[hex.EncodeToString(handle)] = &nonceState{
+			target:         target,
+			credentialType: credentialType,
+			expires:        time.Now().Add(nonceLifetime),
+		}
+		ca.mu.Unlock()
+
+		resp.Handle = handle
+		resp.ExpiresIn = int(nonceLifetime.Seconds())
+
+	case est.FreshnessPresentEpoch:
+		if policy.EpochMarker == "" {
+			return nil, caError{status: http.StatusInternalServerError, desc: "present-epoch target has no epoch marker"}
+		}
+		resp.Handle = []byte(policy.EpochMarker)
+
+	case est.FreshnessAbsentTimestamp:
+		resp.MaxAge = policyMaxAge(policy)
+
+	case est.FreshnessAbsentEpoch:
+		if policy.EpochMarker == "" {
+			return nil, caError{status: http.StatusInternalServerError, desc: "absent-epoch target has no epoch marker"}
+		}
+
+	case est.FreshnessAbsentNone:
+		// No freshness parameters are returned.
+
+	default:
+		return nil, caError{
+			status: http.StatusInternalServerError,
+			desc:   fmt.Sprintf("target has unsupported freshness kind %q", freshnessKind),
+		}
+	}
+
 	if mechanism == est.MechanismRetrieve {
-		resp.RequiredBindings = []string{est.BindingCEKThumbprint}
 		resp.AcceptableCEK = []string{est.EncECDHP256}
 	} else {
-		resp.RequiredBindings = []string{est.BindingCSRHash}
+		resp.AcceptableCSK = []string{"ecdsa-p256-sha256"}
 	}
 
 	return resp, nil
@@ -229,7 +279,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 
 // consumeHandle validates and burns a present-nonce Handle. A replayed or
 // expired Handle yields 409 Conflict.
-func (ca *AttestedCA) consumeHandle(target string, handle []byte) error {
+func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte) error {
 	if len(handle) == 0 {
 		return caError{
 			status: http.StatusBadRequest,
@@ -256,6 +306,12 @@ func (ca *AttestedCA) consumeHandle(target string, handle []byte) error {
 			desc:   "handle was not issued for this target",
 		}
 	}
+	if state.credentialType != credentialType {
+		return caError{
+			status: http.StatusForbidden,
+			desc:   "handle was not issued for this credential type",
+		}
+	}
 
 	state.used = true
 
@@ -271,13 +327,27 @@ type attestationResults struct {
 }
 
 // verifyEvidence mocks the RATS Verifier. It validates the provider signature,
-// PCR policy and binding to the Freshness from attest-initiate, then returns
-// Attestation Results.
+// PCR policy, binding to the Freshness from attest-initiate, and the direct-
+// form binding_input digest ({{binding-input}}) covering server_id, Target and
+// subject (CSR or CEKpub), then returns Attestation Results.
 func (ca *AttestedCA) verifyEvidence(
-	target, freshnessKind string,
+	target, credentialType, freshnessKind string,
 	handle []byte,
 	evidence []byte,
+	subject []byte,
 ) (*attestationResults, error) {
+	policy, err := ca.policyFor(target, credentialType)
+	if err != nil {
+		return nil, err
+	}
+	expectedFreshnessKind := policyFreshnessKind(policy)
+	if freshnessKind != expectedFreshnessKind {
+		return nil, caError{
+			status: http.StatusForbidden,
+			desc:   "freshness kind does not match target policy",
+		}
+	}
+
 	claims, err := est.VerifyMockEvidence(evidence, ca.trustedProviderKey)
 	if err != nil {
 		return nil, caError{
@@ -303,8 +373,45 @@ func (ca *AttestedCA) verifyEvidence(
 				desc:   "attestation failed: evidence not bound to handle",
 			}
 		}
-		if err := ca.consumeHandle(target, handle); err != nil {
+		if err := ca.consumeHandle(target, credentialType, handle); err != nil {
 			return nil, err
+		}
+
+	case est.FreshnessPresentEpoch, est.FreshnessAbsentEpoch:
+		if len(handle) == 0 || claims.Nonce == nil || claims.Nonce.Len() != 1 ||
+			!bytes.Equal(claims.Nonce.GetI(0), handle) {
+			return nil, caError{
+				status: http.StatusForbidden,
+				desc:   "attestation failed: evidence not bound to epoch marker",
+			}
+		}
+		if !bytes.Equal(handle, []byte(policy.EpochMarker)) {
+			return nil, caError{
+				status: http.StatusConflict,
+				desc:   "epoch marker has moved",
+			}
+		}
+
+	case est.FreshnessAbsentTimestamp:
+		if len(handle) != 0 || claims.Nonce != nil {
+			return nil, caError{
+				status: http.StatusBadRequest,
+				desc:   "handle must be absent for absent-timestamp freshness",
+			}
+		}
+		now := time.Now()
+		issuedAt := time.Unix(claims.IssuedAt, 0)
+		if issuedAt.After(now.Add(trustedClockSkew)) {
+			return nil, caError{
+				status: http.StatusForbidden,
+				desc:   "attestation failed: evidence timestamp is in the future",
+			}
+		}
+		if now.Sub(issuedAt) > time.Duration(policyMaxAge(policy))*time.Second {
+			return nil, caError{
+				status: http.StatusForbidden,
+				desc:   "attestation failed: evidence timestamp is stale",
+			}
 		}
 
 	case est.FreshnessAbsentNone:
@@ -322,10 +429,20 @@ func (ca *AttestedCA) verifyEvidence(
 		}
 	}
 
-	subject := claims.Issuer + ":" + hex.EncodeToString(claims.PCRs[est.MockTEEWorkloadPCR])
+	// Evidence-to-Server, Evidence-to-Target and Evidence-to-CSR/CEK binding,
+	// recomputed with this CAS's own server_id rather than trusting the request.
+	expectedDigest := est.BindingDigest(handle, attestServerID, target, subject)
+	if !bytes.Equal(claims.BindingDigest, expectedDigest) {
+		return nil, caError{
+			status: http.StatusForbidden,
+			desc:   "attestation failed: evidence not bound to this server, target or key material",
+		}
+	}
+
+	subjectHex := hex.EncodeToString(claims.PCRs[est.MockTEEWorkloadPCR])
 
 	return &attestationResults{
-		Subject:       subject,
+		Subject:       claims.Issuer + ":" + subjectHex,
 		Target:        target,
 		PolicyVersion: attestPolicyVersion,
 	}, nil
@@ -357,12 +474,12 @@ func (ca *AttestedCA) EnrollCredential(
 		return nil, caError{status: http.StatusBadRequest, desc: "invalid PKCS10 certificate signing request signature"}
 	}
 
-	if req.Binding.Method != est.BindingCSRHash {
+	if req.Binding.Method != est.BindingInput {
 		return nil, caError{status: http.StatusBadRequest, desc: "unsupported enrollment binding method"}
 	}
 
 	if _, err := ca.verifyEvidence(
-		req.Target, req.FreshnessKind, req.Handle, req.Evidence,
+		req.Target, req.CredentialType, req.FreshnessKind, req.Handle, req.Evidence, req.CSR,
 	); err != nil {
 		return nil, err
 	}
@@ -371,12 +488,16 @@ func (ca *AttestedCA) EnrollCredential(
 }
 
 // groupID maps Attestation Results onto a credential group identifier which is
-// stable across replica workloads and distinct across profiles.
-func groupID(res *attestationResults, profile string) string {
+// stable across replica workloads and distinct across profiles and Credential
+// Hints, per the draft's group_id = H(attestation_subject || credential_hint
+// || policy_version) construction.
+func groupID(res *attestationResults, profile, credentialHint string) string {
 	h := sha256.New()
 	h.Write([]byte(res.Subject))
 	h.Write([]byte{0})
 	h.Write([]byte(profile))
+	h.Write([]byte{0})
+	h.Write([]byte(credentialHint))
 	h.Write([]byte{0})
 	h.Write([]byte(res.PolicyVersion))
 
@@ -479,25 +600,32 @@ func (ca *AttestedCA) RetrieveCredential(
 	if len(req.CEKPub) == 0 {
 		return nil, caError{status: http.StatusBadRequest, desc: "CEKpub is required"}
 	}
-	if req.Binding.Method != est.BindingCEKThumbprint {
+	if req.Binding.Method != est.BindingInput {
 		return nil, caError{status: http.StatusBadRequest, desc: "unsupported retrieval binding method"}
 	}
 
 	res, err := ca.verifyEvidence(
-		req.Target, req.FreshnessKind, req.Handle, req.Evidence,
+		req.Target, req.CredentialType, req.FreshnessKind, req.Handle, req.Evidence, req.CEKPub,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	gid := groupID(res, req.Profile)
+	var credentialHint string
+	if req.CredentialHint != nil {
+		credentialHint = *req.CredentialHint
+	}
+
+	gid := groupID(res, req.Profile, credentialHint)
 
 	bundle, err := ca.vaultBundle(ctx, gid, res, aps, r)
 	if err != nil {
 		return nil, err
 	}
 
-	sealed, err := est.SealCredentialBundle(bundle, req.CEKPub, req.Handle, req.Profile, attestServerID)
+	sealed, err := est.SealCredentialBundle(
+		bundle, req.CEKPub, req.Handle, req.Profile, attestServerID, req.Target, credentialHint,
+	)
 	if err != nil {
 		return nil, caError{
 			status: http.StatusBadRequest,
