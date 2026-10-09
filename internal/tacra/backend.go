@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/globalsign/est"
 	"github.com/globalsign/pemfile"
 )
@@ -34,6 +35,12 @@ type Config struct {
 		URL string `json:"url"`
 		CA  string `json:"ca"`
 	} `json:"veraison"`
+	// Verifiers by the TSM report's provider (e.g. "tdx_guest"), for Evidence the Veraison deployment does not
+	// appraise; the rest goes to Veraison. Choosing where to send Evidence by its format is not appraising it.
+	Verifiers map[string]struct {
+		URL string `json:"url"`
+		CA  string `json:"ca"`
+	} `json:"verifiers,omitempty"`
 	RRPs               map[string]RRP    `json:"rrps"`    // by name
 	Targets            map[string]string `json:"targets"` // Target -> RRP name
 	AcceptableEvidence []string          `json:"acceptable_evidence"`
@@ -55,10 +62,11 @@ type session struct {
 
 // Backend implements est.CA, est.AttestationCA and est.RawRetriever.
 type Backend struct {
-	cfg      Config
-	cacerts  []*x509.Certificate
-	veraison *http.Client
-	rrps     map[string]*http.Client
+	cfg       Config
+	cacerts   []*x509.Certificate
+	veraison  *http.Client
+	verifiers map[string]*http.Client // by provider
+	rrps      map[string]*http.Client
 
 	mu       sync.Mutex
 	sessions map[string]session // present-* Handles returned by attest-initiate
@@ -79,10 +87,15 @@ func client(caPath string) (*http.Client, error) {
 
 // New builds the backend from its configuration.
 func New(cfg Config) (*Backend, error) {
-	b := &Backend{cfg: cfg, rrps: map[string]*http.Client{}, sessions: map[string]session{}}
+	b := &Backend{cfg: cfg, rrps: map[string]*http.Client{}, verifiers: map[string]*http.Client{}, sessions: map[string]session{}}
 	var err error
 	if b.veraison, err = client(cfg.Veraison.CA); err != nil {
 		return nil, err
+	}
+	for provider, v := range cfg.Verifiers {
+		if b.verifiers[provider], err = client(v.CA); err != nil {
+			return nil, err
+		}
 	}
 	for name, r := range cfg.RRPs {
 		if r.Mode != est.MechanismEnroll && r.Mode != est.MechanismRetrieve {
@@ -263,10 +276,18 @@ func (b *Backend) profile(p string) (string, error) {
 // verify obtains Attestation Results from Veraison: a challenge-response session whose nonce is the binding value,
 // computed with the RRP's identifier, and the Evidence. It does not appraise the result; the RRP does.
 func (b *Backend) verify(ctx context.Context, evidence []byte, profile string, nonce []byte) (string, error) {
-	base := strings.TrimRight(b.cfg.Veraison.URL, "/")
+	base, vc := strings.TrimRight(b.cfg.Veraison.URL, "/"), b.veraison
+	var t struct {
+		Provider string `cbor:"provider"`
+	}
+	if cbor.Unmarshal(evidence, &t) == nil {
+		if v, ok := b.cfg.Verifiers[strings.TrimSpace(t.Provider)]; ok {
+			base, vc = strings.TrimRight(v.URL, "/"), b.verifiers[strings.TrimSpace(t.Provider)]
+		}
+	}
 	q := url.Values{"nonce": {base64.URLEncoding.EncodeToString(nonce)}}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/challenge-response/v1/newSession?"+q.Encode(), nil)
-	resp, err := b.veraison.Do(req)
+	resp, err := vc.Do(req)
 	if err != nil {
 		return "", fail(http.StatusServiceUnavailable, "verifier unavailable")
 	}
@@ -280,14 +301,14 @@ func (b *Backend) verify(ctx context.Context, evidence []byte, profile string, n
 	}
 	defer func() {
 		del, _ := http.NewRequest(http.MethodDelete, loc, nil)
-		if r, err := b.veraison.Do(del); err == nil {
+		if r, err := vc.Do(del); err == nil {
 			r.Body.Close()
 		}
 	}()
 	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, loc, bytes.NewReader(evidence))
 	req.Header.Set("Content-Type", profile)
 	req.Header.Set("Accept", "application/vnd.veraison.challenge-response-session+json")
-	resp, err = b.veraison.Do(req)
+	resp, err = vc.Do(req)
 	if err != nil {
 		return "", fail(http.StatusServiceUnavailable, "verifier unavailable")
 	}
