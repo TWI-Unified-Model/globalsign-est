@@ -82,8 +82,11 @@ type Backend struct {
 	verifiers map[string]*http.Client // by name
 	rrps      map[string]*http.Client
 
-	mu       sync.Mutex
-	sessions map[string]session // present-* Handles returned by attest-initiate
+	mu sync.Mutex
+	// present-* Handles returned by attest-initiate, by Handle: a present-nonce Handle is one Target's, but a
+	// present-epoch Handle is the epoch, which every Target of the deployment shares, so it keeps a session per Target
+	// and Credential Type that asked
+	sessions map[string][]session
 }
 
 // client is TLS 1.3 to a server certified by caPath, presenting this server's client certificate when one is
@@ -110,7 +113,7 @@ func (c *Config) client(caPath string) (*http.Client, error) {
 
 // New builds the backend from its configuration.
 func New(cfg Config) (*Backend, error) {
-	b := &Backend{cfg: cfg, rrps: map[string]*http.Client{}, verifiers: map[string]*http.Client{}, sessions: map[string]session{}}
+	b := &Backend{cfg: cfg, rrps: map[string]*http.Client{}, verifiers: map[string]*http.Client{}, sessions: map[string][]session{}}
 	var err error
 	for name, v := range cfg.Verifiers {
 		if v.URL == "" || v.Provider == "" {
@@ -259,16 +262,8 @@ func (b *Backend) InitiateRemoteAttestation(ctx context.Context, target, credent
 		return nil, fail(http.StatusBadGateway, "RRP %s: Handle is not base64url", name)
 	}
 	if len(handle) > 0 {
-		b.mu.Lock()
-		now := time.Now()
-		for k, s := range b.sessions {
-			if now.After(s.expires) {
-				delete(b.sessions, k)
-			}
-		}
-		b.sessions[hex.EncodeToString(handle)] = session{target, credentialType, name, g.FreshnessKind,
-			now.Add(time.Duration(g.ExpiresIn) * time.Second)}
-		b.mu.Unlock()
+		b.remember(hex.EncodeToString(handle), session{target, credentialType, name, g.FreshnessKind,
+			time.Now().Add(time.Duration(g.ExpiresIn) * time.Second)})
 	}
 	return &est.AttestationInitiateResponse{FreshnessKind: g.FreshnessKind, Handle: handle, RRPID: g.RRPID,
 		ExpiresIn: g.ExpiresIn, MaxAge: g.MaxAge, AcceptableEvidence: b.cfg.AcceptableEvidence,
@@ -276,23 +271,62 @@ func (b *Backend) InitiateRemoteAttestation(ctx context.Context, target, credent
 		Mechanism: g.Mode}, nil
 }
 
-// correlate refuses a second leg that does not belong to the attest-initiate that returned its Handle.
+// remember keeps the session of an attest-initiate under its Handle, in place of an earlier one for the same Target,
+// Credential Type and kind, and forgets every expired session.
+func (b *Backend) remember(key string, s session) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	for k, ss := range b.sessions {
+		live := ss[:0]
+		for _, x := range ss {
+			if !now.After(x.expires) && !(k == key && x.target == s.target && x.credentialType == s.credentialType && x.kind == s.kind) {
+				live = append(live, x)
+			}
+		}
+		if len(live) == 0 {
+			delete(b.sessions, k)
+		} else {
+			b.sessions[k] = live
+		}
+	}
+	b.sessions[key] = append(b.sessions[key], s)
+}
+
+// correlate refuses a second leg that does not belong to an attest-initiate that returned its Handle for its Target,
+// Credential Type and kind.
 func (b *Backend) correlate(kind string, handle []byte, target, credentialType string) error {
+	return b.correlateKey(kind, hex.EncodeToString(handle), target, credentialType)
+}
+
+func (b *Backend) correlateKey(kind, key, target, credentialType string) error {
 	if kind != est.FreshnessPresentNonce && kind != est.FreshnessPresentEpoch {
 		return nil // no Handle was returned; the RRP checks the freshness element
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	key := hex.EncodeToString(handle)
-	s, ok := b.sessions[key]
-	if !ok || time.Now().After(s.expires) {
+	now, live, match := time.Now(), 0, -1
+	for i, s := range b.sessions[key] {
+		if now.After(s.expires) {
+			continue
+		}
+		live++
+		if s.target == target && s.credentialType == credentialType && s.kind == kind {
+			match = i
+		}
+	}
+	if live == 0 {
 		return fail(http.StatusConflict, "no attest-initiate returned this Handle, or it expired")
 	}
-	if s.target != target || s.credentialType != credentialType || s.kind != kind {
+	if match < 0 {
 		return fail(http.StatusForbidden, "Target, Credential Type or Freshness Kind differ from the attest-initiate")
 	}
-	if kind == est.FreshnessPresentNonce {
-		delete(b.sessions, key)
+	if kind == est.FreshnessPresentNonce { // single use
+		ss := b.sessions[key]
+		b.sessions[key] = append(ss[:match:match], ss[match+1:]...)
+		if len(b.sessions[key]) == 0 {
+			delete(b.sessions, key)
+		}
 	}
 	return nil
 }
