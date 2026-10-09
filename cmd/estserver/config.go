@@ -18,6 +18,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/globalsign/est/internal/tacra"
 	"io/ioutil"
 
 	"github.com/globalsign/est/internal/mockca"
@@ -29,6 +30,7 @@ type config struct {
 	TLS                 *tlsConfig    `json:"tls,omitempty"`
 	AllowedHosts        []string      `json:"allowed_hosts,omitempty"`
 	Attest              *attestConfig `json:"attest,omitempty"`
+	Tacra               *tacra.Config `json:"tacra,omitempty"` // deployed Verifier and RRPs instead of the mock
 	HealthCheckPassword string        `json:"healthcheck_password"`
 	RateLimit           int           `json:"rate_limit"`
 	Timeout             int           `json:"timeout"`

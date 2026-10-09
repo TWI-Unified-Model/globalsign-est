@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 )
@@ -110,6 +111,19 @@ func (c *Client) RetrieveCredential(
 	}
 
 	return &out, nil
+}
+
+// RetrieveCredentialRaw performs the second leg of Attested Retrieval Mode and
+// returns the EncryptedCredentialBundle exactly as the server sent it, for an
+// Attester that opens the container of the revised EST profile itself.
+func (c *Client) RetrieveCredentialRaw(ctx context.Context, ar *AttestedRetrievalRequest) ([]byte, error) {
+	resp, err := c.postAttest(ctx, attestRetrieveEndpoint, ar, mimeTypeJSON)
+	if err != nil {
+		return nil, err
+	}
+	defer consumeAndClose(resp.Body)
+
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 }
 
 // postAttest marshals and POSTs a JSON attestation request, returning the

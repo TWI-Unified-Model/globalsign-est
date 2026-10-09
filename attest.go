@@ -153,7 +153,8 @@ type AttestationCA interface {
 type AttestationInitiateResponse struct {
 	FreshnessKind      string   `json:"freshness_kind"`
 	Handle             []byte   `json:"handle,omitempty"`
-	ServerID           string   `json:"server_id"`
+	ServerID           string   `json:"server_id,omitempty"`
+	RRPID              string   `json:"rrp_id,omitempty"` // revised draft: the RRP that relies on the Evidence
 	ExpiresIn          int      `json:"expires_in,omitempty"`
 	MaxAge             int      `json:"max_age,omitempty"`
 	AcceptableEvidence []string `json:"acceptable_evidence,omitempty"`
@@ -704,10 +705,28 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A CA that forwards a container produced by its Secret Vault returns it as it is.
+	if raw, ok := aca.(RawRetriever); ok {
+		body, err := raw.RetrieveCredentialRaw(ctx, &req, aps, r)
+		if writeOnError(ctx, w, logMsgAttestRetrieveFailed, err) {
+			return
+		}
+		writeResponse(w, mimeTypeJSON, false, body)
+		return
+	}
+
 	bundle, err := aca.RetrieveCredential(ctx, &req, aps, r)
 	if writeOnError(ctx, w, logMsgAttestRetrieveFailed, err) {
 		return
 	}
 
 	writeJSONResponse(ctx, w, bundle)
+}
+
+// RawRetriever is implemented by an AttestationCA whose Secret Vault produces the
+// EncryptedCredentialBundle itself (for example the hpke-auth container of the
+// revised EST profile): the EST server returns that container unchanged, as a
+// conduit, instead of re-encoding it as the mock's container type.
+type RawRetriever interface {
+	RetrieveCredentialRaw(ctx context.Context, req *AttestedRetrievalRequest, aps string, r *http.Request) ([]byte, error)
 }

@@ -40,6 +40,7 @@ import (
 	"github.com/globalsign/est"
 	"github.com/globalsign/est/internal/basiclogger"
 	"github.com/globalsign/est/internal/mockca"
+	"github.com/globalsign/est/internal/tacra"
 	"github.com/globalsign/pemfile"
 )
 
@@ -242,9 +243,16 @@ func main() {
 		return nil
 	}
 
-	// Wrap the mock CA with mock attested credential acquisition support.
+	// Wrap the mock CA with mock attested credential acquisition support, or
+	// use the backend that forwards to a deployed Verifier and RRPs.
 	var serverCA est.CA = ca
-	if cfg.Attest != nil {
+	if cfg.Tacra != nil {
+		backend, err := tacra.New(*cfg.Tacra)
+		if err != nil {
+			log.Fatalf("failed to configure the TACRA backend: %v", err)
+		}
+		serverCA = backend
+	} else if cfg.Attest != nil {
 		trustedProviderKey, err := loadProviderPublicKey(cfg.Attest.TrustedProviderPublicKey)
 		if err != nil {
 			log.Fatalf("failed to load attestation trust anchor: %v", err)
