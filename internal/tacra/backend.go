@@ -1,7 +1,7 @@
 // Package tacra is an EST server backend for attested credential acquisition (draft-novak-lamps-tacra-est) that
 // talks to deployed components: Freshness Handles come from the RATS Relying Party (RRP) that will rely on the
 // Evidence, a Credential Authority or a Secret Vault. For an RRP in the Passport model (the default) Evidence goes
-// to a Veraison verification service and the Attestation Results go with the request to the RRP; for an RRP in the
+// to a verifier the RRP takes and the Attestation Results go with the request to the RRP; for an RRP in the
 // Background Check model the Evidence goes to the RRP, which asks the verifier itself (TACRA Goal 6; Mark Novak,
 // TheBankster/rats-tacra#6: "the Verifier would be contacted by SV and CA in Background Check mode. For Passport
 // mode, the interaction is driven by the CAS Server"). The Attester sees no difference. As the profile requires of an
@@ -35,20 +35,24 @@ import (
 
 // Config is the backend's section of the EST server configuration.
 type Config struct {
-	Veraison struct {
-		URL string `json:"url"`
-		CA  string `json:"ca"`
-	} `json:"veraison"`
-	// Verifiers by the TSM report's provider (e.g. "tdx_guest"), for Evidence the Veraison deployment does not
-	// appraise; the rest goes to Veraison. Choosing where to send Evidence by its format is not appraising it.
-	Verifiers map[string]struct {
-		URL string `json:"url"`
-		CA  string `json:"ca"`
-	} `json:"verifiers,omitempty"`
+	// Verifiers by name: where this server obtains Attestation Results for an RRP in the Passport model, and the TSM
+	// report provider whose Evidence each appraises. An RRP's policy names the verifiers it takes (RRP.Verifiers).
+	Verifiers map[string]Verifier `json:"verifiers"`
+	// ClientCert and ClientKey are this server's certificate on its calls to the RRPs and the verifiers, which take
+	// only callers they know (mutual TLS, N23).
+	ClientCert         string            `json:"client_cert,omitempty"`
+	ClientKey          string            `json:"client_key,omitempty"`
 	RRPs               map[string]RRP    `json:"rrps"`    // by name
 	Targets            map[string]string `json:"targets"` // Target -> RRP name
 	AcceptableEvidence []string          `json:"acceptable_evidence"`
 	CACerts            string            `json:"ca_certs"` // PEM chain served at /cacerts
+}
+
+// Verifier is one verifier this server may ask.
+type Verifier struct {
+	URL      string `json:"url"`
+	CA       string `json:"ca"`       // CA of its TLS certificate
+	Provider string `json:"provider"` // the TSM report provider of the Evidence it appraises ("sev_guest", "tdx_guest")
 }
 
 // RRP is a Credential Authority or Secret Vault gateway.
@@ -60,6 +64,10 @@ type RRP struct {
 	// RATSModel: "passport" (the default), this server obtains the Attestation Results; "background-check", the
 	// RRP does, from the Evidence this server forwards
 	RATSModel string `json:"rats_model,omitempty"`
+	// Verifiers names the verifiers whose Attestation Results the RRP takes, as its policy says (N24). In Passport
+	// this server asks only these, the one for the Evidence's TSM provider, and refuses Evidence none of them
+	// appraises; the RRP checks again that its own policy's verifier signed what it receives.
+	Verifiers []string `json:"verifiers,omitempty"`
 }
 
 type session struct {
@@ -71,15 +79,16 @@ type session struct {
 type Backend struct {
 	cfg       Config
 	cacerts   []*x509.Certificate
-	veraison  *http.Client
-	verifiers map[string]*http.Client // by provider
+	verifiers map[string]*http.Client // by name
 	rrps      map[string]*http.Client
 
 	mu       sync.Mutex
 	sessions map[string]session // present-* Handles returned by attest-initiate
 }
 
-func client(caPath string) (*http.Client, error) {
+// client is TLS 1.3 to a server certified by caPath, presenting this server's client certificate when one is
+// configured.
+func (c *Config) client(caPath string) (*http.Client, error) {
 	pem, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, err
@@ -88,19 +97,26 @@ func client(caPath string) (*http.Client, error) {
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, errors.New("tacra: no CA certificate in " + caPath)
 	}
-	return &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}, nil
+	tc := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}
+	if c.ClientCert != "" || c.ClientKey != "" {
+		pair, err := tls.LoadX509KeyPair(c.ClientCert, c.ClientKey)
+		if err != nil {
+			return nil, fmt.Errorf("tacra: client certificate: %w", err)
+		}
+		tc.Certificates = []tls.Certificate{pair}
+	}
+	return &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{TLSClientConfig: tc}}, nil
 }
 
 // New builds the backend from its configuration.
 func New(cfg Config) (*Backend, error) {
 	b := &Backend{cfg: cfg, rrps: map[string]*http.Client{}, verifiers: map[string]*http.Client{}, sessions: map[string]session{}}
 	var err error
-	if b.veraison, err = client(cfg.Veraison.CA); err != nil {
-		return nil, err
-	}
-	for provider, v := range cfg.Verifiers {
-		if b.verifiers[provider], err = client(v.CA); err != nil {
+	for name, v := range cfg.Verifiers {
+		if v.URL == "" || v.Provider == "" {
+			return nil, fmt.Errorf("tacra: verifier %s: url and provider are required", name)
+		}
+		if b.verifiers[name], err = cfg.client(v.CA); err != nil {
 			return nil, err
 		}
 	}
@@ -111,7 +127,15 @@ func New(cfg Config) (*Backend, error) {
 		if r.RATSModel != "" && r.RATSModel != passport && r.RATSModel != backgroundCheck {
 			return nil, fmt.Errorf("tacra: RRP %s: rats_model must be passport or background-check", name)
 		}
-		if b.rrps[name], err = client(r.CA); err != nil {
+		if r.RATSModel != backgroundCheck && len(r.Verifiers) == 0 {
+			return nil, fmt.Errorf("tacra: RRP %s: in Passport this server asks a verifier the RRP takes; it names none", name)
+		}
+		for _, v := range r.Verifiers {
+			if _, ok := cfg.Verifiers[v]; !ok {
+				return nil, fmt.Errorf("tacra: RRP %s names unknown verifier %s", name, v)
+			}
+		}
+		if b.rrps[name], err = cfg.client(r.CA); err != nil {
 			return nil, err
 		}
 	}
@@ -283,18 +307,28 @@ func (b *Backend) profile(p string) (string, error) {
 	return p, nil
 }
 
-// verify obtains Attestation Results from Veraison: a challenge-response session whose nonce is the binding value,
-// computed with the RRP's identifier, and the Evidence. It does not appraise the result; the RRP does.
-func (b *Backend) verify(ctx context.Context, evidence []byte, profile string, nonce []byte) (string, error) {
-	base, vc := strings.TrimRight(b.cfg.Veraison.URL, "/"), b.veraison
+// verifierFor picks, among the verifiers the RRP takes, the one for the Evidence's TSM provider (N24: the RRP's
+// configuration chooses the verifier; the Evidence only picks among those, and there is no default for the rest).
+func (b *Backend) verifierFor(rrpName string, rrp RRP, evidence []byte) (string, error) {
 	var t struct {
 		Provider string `cbor:"provider"`
 	}
+	provider := ""
 	if cbor.Unmarshal(evidence, &t) == nil {
-		if v, ok := b.cfg.Verifiers[strings.TrimSpace(t.Provider)]; ok {
-			base, vc = strings.TrimRight(v.URL, "/"), b.verifiers[strings.TrimSpace(t.Provider)]
+		provider = strings.TrimSpace(t.Provider)
+	}
+	for _, name := range rrp.Verifiers {
+		if v := b.cfg.Verifiers[name]; v.Provider == provider {
+			return name, nil
 		}
 	}
+	return "", fail(http.StatusForbidden, "none of the verifiers RRP %s takes appraises Evidence of provider %q", rrpName, provider)
+}
+
+// verify obtains Attestation Results from the named verifier: a challenge-response session whose nonce is the
+// binding value, computed with the RRP's identifier, and the Evidence. It does not appraise the result; the RRP does.
+func (b *Backend) verify(ctx context.Context, verifier string, evidence []byte, profile string, nonce []byte) (string, error) {
+	base, vc := strings.TrimRight(b.cfg.Verifiers[verifier].URL, "/"), b.verifiers[verifier]
 	q := url.Values{"nonce": {base64.URLEncoding.EncodeToString(nonce)}}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/challenge-response/v1/newSession?"+q.Encode(), nil)
 	resp, err := vc.Do(req)
@@ -379,8 +413,12 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 		// the RRP asks the verifier, with the binding value it recomputes; this server does not
 		leg.Evidence, leg.Profile = b64u(evidence), p
 	} else {
+		v, err := b.verifierFor(name, rrp, evidence)
+		if err != nil {
+			return "", RRP{}, secondLeg{}, err
+		}
 		nonce := bindingValue(handle, target, rrp.RRPID, subject)
-		if leg.EAR, err = b.verify(ctx, evidence, p, nonce); err != nil {
+		if leg.EAR, err = b.verify(ctx, v, evidence, p, nonce); err != nil {
 			return "", RRP{}, secondLeg{}, err
 		}
 	}
@@ -390,7 +428,8 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 	return name, rrp, leg, nil
 }
 
-// EnrollCredential forwards Evidence to Veraison, then the CSR and Attestation Results to the Credential Authority;
+// EnrollCredential forwards Evidence to a verifier the RRP takes, then the CSR and Attestation Results to the
+// Credential Authority;
 // in Background Check, the CSR and the Evidence to the Credential Authority.
 func (b *Backend) EnrollCredential(ctx context.Context, req *est.AttestedEnrollmentRequest, aps string, r *http.Request) (*x509.Certificate, error) {
 	name, _, leg, err := b.forward(ctx, est.MechanismEnroll, req.FreshnessKind, req.Target, req.CredentialType,
@@ -422,7 +461,8 @@ func (b *Backend) RetrieveCredential(context.Context, *est.AttestedRetrievalRequ
 	return nil, fail(http.StatusInternalServerError, "RetrieveCredentialRaw serves attest-retrieve")
 }
 
-// RetrieveCredentialRaw forwards Evidence to Veraison, then CEKpub and the Attestation Results to the Secret Vault
+// RetrieveCredentialRaw forwards Evidence to a verifier the RRP takes, then CEKpub and the Attestation Results to the
+// Secret Vault
 // (in Background Check, CEKpub and the Evidence), and returns the Vault's encrypted container unchanged.
 func (b *Backend) RetrieveCredentialRaw(ctx context.Context, req *est.AttestedRetrievalRequest, aps string, r *http.Request) ([]byte, error) {
 	name, _, leg, err := b.forward(ctx, est.MechanismRetrieve, req.FreshnessKind, req.Target, req.CredentialType,

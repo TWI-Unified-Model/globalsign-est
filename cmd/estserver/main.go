@@ -212,8 +212,14 @@ func main() {
 		clientCAs.AddCert(cert)
 	}
 
+	minTLS := uint16(tls.VersionTLS12)
+	if cfg.Tacra != nil {
+		// the bank profile's CAS channel: TLS 1.3, as the reference implementation's EST server (tacra-est
+		// BANK-PROFILE, "TLS between the CAS client and server")
+		minTLS = tls.VersionTLS13
+	}
 	tlsCfg := &tls.Config{
-		MinVersion:       tls.VersionTLS12,
+		MinVersion:       minTLS,
 		CurvePreferences: []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
 		ClientAuth:       tls.VerifyClientCertIfGiven,
 		Certificates: []tls.Certificate{
