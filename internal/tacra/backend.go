@@ -1,8 +1,12 @@
 // Package tacra is an EST server backend for attested credential acquisition (draft-novak-lamps-tacra-est) that
 // talks to deployed components: Freshness Handles come from the RATS Relying Party (RRP) that will rely on the
-// Evidence, Evidence goes to a Veraison verification service (Passport model), and the Attestation Results go with
-// the request to that RRP, a Credential Authority or a Secret Vault. As the profile requires of an EST server, it
-// mints no Handle, appraises neither Evidence nor Attestation Results, and authorizes nothing: the RRP decides.
+// Evidence, a Credential Authority or a Secret Vault. For an RRP in the Passport model (the default) Evidence goes
+// to a Veraison verification service and the Attestation Results go with the request to the RRP; for an RRP in the
+// Background Check model the Evidence goes to the RRP, which asks the verifier itself (TACRA Goal 6; Mark Novak,
+// TheBankster/rats-tacra#6: "the Verifier would be contacted by SV and CA in Background Check mode. For Passport
+// mode, the interaction is driven by the CAS Server"). The Attester sees no difference. As the profile requires of an
+// EST server, it mints no Handle, appraises neither Evidence nor Attestation Results, and authorizes nothing: the RRP
+// decides.
 package tacra
 
 import (
@@ -53,6 +57,9 @@ type RRP struct {
 	CA    string `json:"ca"`     // CA of its TLS certificate
 	RRPID string `json:"rrp_id"` // the identifier it binds; checked against its attest-initiate answers
 	Mode  string `json:"mode"`   // "enroll" or "retrieve"
+	// RATSModel: "passport" (the default), this server obtains the Attestation Results; "background-check", the
+	// RRP does, from the Evidence this server forwards
+	RATSModel string `json:"rats_model,omitempty"`
 }
 
 type session struct {
@@ -100,6 +107,9 @@ func New(cfg Config) (*Backend, error) {
 	for name, r := range cfg.RRPs {
 		if r.Mode != est.MechanismEnroll && r.Mode != est.MechanismRetrieve {
 			return nil, fmt.Errorf("tacra: RRP %s: mode must be enroll or retrieve", name)
+		}
+		if r.RATSModel != "" && r.RATSModel != passport && r.RATSModel != backgroundCheck {
+			return nil, fmt.Errorf("tacra: RRP %s: rats_model must be passport or background-check", name)
 		}
 		if b.rrps[name], err = client(r.CA); err != nil {
 			return nil, err
@@ -324,13 +334,21 @@ func (b *Backend) verify(ctx context.Context, evidence []byte, profile string, n
 	return s.Result, nil
 }
 
+// The RATS models an RRP may run in (RRP.RATSModel).
+const (
+	passport        = "passport"
+	backgroundCheck = "background-check"
+)
+
 type secondLeg struct {
 	FreshnessKind  string `json:"freshness_kind"`
 	Target         string `json:"target"`
 	CredentialType string `json:"credential_type"`
 	Handle         string `json:"handle,omitempty"`
 	CredentialHint string `json:"credential_hint,omitempty"`
-	EAR            string `json:"ear"`
+	EAR            string `json:"ear,omitempty"`      // Passport: the verifier's Attestation Results
+	Evidence       string `json:"evidence,omitempty"` // Background Check: the Attester's Evidence, unopened
+	Profile        string `json:"profile,omitempty"`  // Background Check: its media type
 }
 
 func hint(h *string) string {
@@ -356,19 +374,24 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 	if err != nil {
 		return "", RRP{}, secondLeg{}, err
 	}
-	nonce := bindingValue(handle, target, rrp.RRPID, subject)
-	ear, err := b.verify(ctx, evidence, p, nonce)
-	if err != nil {
-		return "", RRP{}, secondLeg{}, err
+	leg := secondLeg{FreshnessKind: kind, Target: target, CredentialType: credentialType, CredentialHint: hint(hintp)}
+	if rrp.RATSModel == backgroundCheck {
+		// the RRP asks the verifier, with the binding value it recomputes; this server does not
+		leg.Evidence, leg.Profile = b64u(evidence), p
+	} else {
+		nonce := bindingValue(handle, target, rrp.RRPID, subject)
+		if leg.EAR, err = b.verify(ctx, evidence, p, nonce); err != nil {
+			return "", RRP{}, secondLeg{}, err
+		}
 	}
-	leg := secondLeg{FreshnessKind: kind, Target: target, CredentialType: credentialType, CredentialHint: hint(hintp), EAR: ear}
 	if len(handle) > 0 {
 		leg.Handle = b64u(handle)
 	}
 	return name, rrp, leg, nil
 }
 
-// EnrollCredential forwards Evidence to Veraison, then the CSR and Attestation Results to the Credential Authority.
+// EnrollCredential forwards Evidence to Veraison, then the CSR and Attestation Results to the Credential Authority;
+// in Background Check, the CSR and the Evidence to the Credential Authority.
 func (b *Backend) EnrollCredential(ctx context.Context, req *est.AttestedEnrollmentRequest, aps string, r *http.Request) (*x509.Certificate, error) {
 	name, _, leg, err := b.forward(ctx, est.MechanismEnroll, req.FreshnessKind, req.Target, req.CredentialType,
 		req.Handle, req.Evidence, req.Profile, req.CredentialHint, req.CSR)
@@ -399,8 +422,8 @@ func (b *Backend) RetrieveCredential(context.Context, *est.AttestedRetrievalRequ
 	return nil, fail(http.StatusInternalServerError, "RetrieveCredentialRaw serves attest-retrieve")
 }
 
-// RetrieveCredentialRaw forwards Evidence to Veraison, then CEKpub and the Attestation Results to the Secret Vault,
-// and returns the Vault's encrypted container unchanged.
+// RetrieveCredentialRaw forwards Evidence to Veraison, then CEKpub and the Attestation Results to the Secret Vault
+// (in Background Check, CEKpub and the Evidence), and returns the Vault's encrypted container unchanged.
 func (b *Backend) RetrieveCredentialRaw(ctx context.Context, req *est.AttestedRetrievalRequest, aps string, r *http.Request) ([]byte, error) {
 	name, _, leg, err := b.forward(ctx, est.MechanismRetrieve, req.FreshnessKind, req.Target, req.CredentialType,
 		req.Handle, req.Evidence, req.Profile, req.CredentialHint, req.CEKPub)
