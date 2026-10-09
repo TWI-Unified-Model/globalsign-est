@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/v5"
 	"github.com/veraison/eat"
 	"github.com/veraison/go-cose"
 )

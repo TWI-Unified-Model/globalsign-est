@@ -7,13 +7,13 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.3
 	github.com/globalsign/pemfile v1.0.0
 	github.com/globalsign/tpmkeys v1.0.4-0.20250806150134-4b00bd5e66cb
-	github.com/go-chi/chi v4.1.2+incompatible
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/google/go-tpm v0.9.6
 	github.com/smallstep/scep v0.0.0-20250318231241-a25cabb69492
 	github.com/veraison/eat v0.0.0-20251105185612-2c0e43e22ea9
 	github.com/veraison/go-cose v1.3.0
 	go.mozilla.org/pkcs7 v0.0.0-20200128120323-432b2356ecb1
-	golang.org/x/crypto v0.52.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/time v0.0.0-20210220033141-f8bda1e9f3ba
 )
 
@@ -29,7 +29,7 @@ require (
 	github.com/thales-e-security/pool v0.0.1 // indirect
 	github.com/veraison/swid v1.1.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/term v0.43.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/term v0.45.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
