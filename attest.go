@@ -152,7 +152,7 @@ type AttestationCA interface {
 // NOT produce Evidence on mismatch.
 type AttestationInitiateResponse struct {
 	FreshnessKind      string   `json:"freshness_kind"`
-	Handle             []byte   `json:"handle,omitempty"`
+	Handle             B64URL   `json:"handle,omitempty"`
 	ServerID           string   `json:"server_id,omitempty"`
 	RRPID              string   `json:"rrp_id,omitempty"` // revised draft: the RRP that relies on the Evidence
 	ExpiresIn          int      `json:"expires_in,omitempty"`
@@ -177,10 +177,10 @@ type AttestedEnrollmentRequest struct {
 	Target         string  `json:"target"`
 	CredentialType string  `json:"credential_type,omitempty"`
 	FreshnessKind  string  `json:"freshness_kind"`
-	Handle         []byte  `json:"handle,omitempty"`
-	CSR            []byte  `json:"csr"`
-	Evidence       []byte  `json:"evidence"`
-	Endorsements   []byte  `json:"endorsements,omitempty"`
+	Handle         B64URL  `json:"handle,omitempty"`
+	CSR            B64URL  `json:"csr"`
+	Evidence       B64URL  `json:"evidence"`
+	Endorsements   B64URL  `json:"endorsements,omitempty"`
 	Binding        Binding `json:"binding"`
 	Profile        string  `json:"profile,omitempty"`
 	CredentialHint *string `json:"credential_hint,omitempty"`
@@ -191,10 +191,10 @@ type AttestedRetrievalRequest struct {
 	Target         string  `json:"target"`
 	CredentialType string  `json:"credential_type,omitempty"`
 	FreshnessKind  string  `json:"freshness_kind"`
-	Handle         []byte  `json:"handle,omitempty"`
-	CEKPub         []byte  `json:"cek_pub"`
-	Evidence       []byte  `json:"evidence"`
-	Endorsements   []byte  `json:"endorsements,omitempty"`
+	Handle         B64URL  `json:"handle,omitempty"`
+	CEKPub         B64URL  `json:"cek_pub"`
+	Evidence       B64URL  `json:"evidence"`
+	Endorsements   B64URL  `json:"endorsements,omitempty"`
 	Binding        Binding `json:"binding"`
 	Profile        string  `json:"profile,omitempty"`
 	CredentialHint *string `json:"credential_hint,omitempty"`

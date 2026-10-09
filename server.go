@@ -200,13 +200,13 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 		r.Get(attestInitiateEndpoint, attestInitiate)
 
 		r.With(
-			requireContentType(mimeTypeJSON),
+			requireContentType(mimeTypeJSON, mimeTypeAttestEnroll),
 		).With(
 			requireBasicAuth(cfg.CheckBasicAuth, true),
 		).Post(attestEnrollEndpoint, attestEnroll)
 
 		r.With(
-			requireContentType(mimeTypeJSON),
+			requireContentType(mimeTypeJSON, mimeTypeAttestRetrieve),
 		).With(
 			requireBasicAuth(cfg.CheckBasicAuth, true),
 		).Post(attestRetrieveEndpoint, attestRetrieve)
@@ -622,10 +622,19 @@ func recoverer(logger Logger) func(next http.Handler) http.Handler {
 
 // requireContentType is middleware which rejects a request if the content
 // type is not as stated.
-func requireContentType(t string) func(next http.Handler) http.Handler {
+func requireContentType(t string, more ...string) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if err := verifyRequestType(r.Header.Get(contentTypeHeader), t); err != nil {
+			err := verifyRequestType(r.Header.Get(contentTypeHeader), t)
+			for _, m := range more { // any of the types a resource accepts
+				if err == nil {
+					break
+				}
+				if verifyRequestType(r.Header.Get(contentTypeHeader), m) == nil {
+					err = nil
+				}
+			}
+			if err != nil {
 				writeOnError(r.Context(), w, logMsgContentTypeInvalid, err)
 				return
 			}
