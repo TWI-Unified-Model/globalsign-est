@@ -46,6 +46,9 @@ type Config struct {
 	Targets            map[string]string `json:"targets"` // Target -> RRP name
 	AcceptableEvidence []string          `json:"acceptable_evidence"`
 	CACerts            string            `json:"ca_certs"` // PEM chain served at /cacerts
+	// ConduitLog is where this server records what it does as the untrusted conduit of a drill (RRP.ConduitAttack),
+	// one line per act, for the bench's verdict to read; empty: standard error.
+	ConduitLog string `json:"conduit_log,omitempty"`
 }
 
 // Verifier is one verifier this server may ask.
@@ -72,6 +75,11 @@ type RRP struct {
 	// this server asks only these, the one for the Evidence's TSM provider, and refuses Evidence none of them
 	// appraises; the RRP checks again that its own policy's verifier signed what it receives.
 	Verifiers []string `json:"verifiers,omitempty"`
+	// ConduitAttack names a drill of the bench in which this server acts as TACRA's untrusted conduit against the RRP.
+	// "verifier": in Passport, the Attestation Results the verifier returned are signed again with a key of this
+	// server's own before they go to the RRP, as a Verifier of the conduit's own would have signed them; the RRP is
+	// expected to refuse them, none of the verifiers its policy takes having signed them (conduit.go).
+	ConduitAttack string `json:"conduit_attack,omitempty"`
 }
 
 type session struct {
@@ -85,6 +93,7 @@ type Backend struct {
 	cacerts   []*x509.Certificate
 	verifiers map[string]*http.Client // by name
 	rrps      map[string]*http.Client
+	conduit   *conduit // the attacking conduit of a drill, when an RRP entry names one
 
 	mu sync.Mutex
 	// present-* Handles returned by attest-initiate, by Handle: a present-nonce Handle is one Target's, but a
@@ -144,6 +153,20 @@ func New(cfg Config) (*Backend, error) {
 		}
 		if b.rrps[name], err = cfg.client(r.CA); err != nil {
 			return nil, err
+		}
+		switch r.ConduitAttack {
+		case "":
+		case conduitVerifier:
+			if r.RATSModel == backgroundCheck {
+				return nil, fmt.Errorf("tacra: RRP %s: conduit_attack %s is a Passport drill: in Background Check this server holds no Attestation Results", name, r.ConduitAttack)
+			}
+			if b.conduit == nil {
+				if b.conduit, err = newConduit(cfg.ConduitLog); err != nil {
+					return nil, err
+				}
+			}
+		default:
+			return nil, fmt.Errorf("tacra: RRP %s: conduit_attack %q: the drills are %s", name, r.ConduitAttack, conduitVerifier)
 		}
 	}
 	for t, name := range cfg.Targets {
@@ -508,6 +531,13 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 		nonce := bindingValue(handle, target, rrp.boundID(), subject)
 		if leg.EAR, err = b.verify(ctx, v, evidence, p, nonce); err != nil {
 			return "", RRP{}, secondLeg{}, err
+		}
+		if rrp.ConduitAttack == conduitVerifier {
+			// the drill: the Attestation Results go on under a signature of the conduit's own key, not the verifier's
+			if leg.EAR, err = b.conduit.resign(leg.EAR); err != nil {
+				return "", RRP{}, secondLeg{}, fail(http.StatusInternalServerError, "conduit attack %s: %v", conduitVerifier, err)
+			}
+			b.conduit.logf(mode, target, "Attestation Results of verifier %s signed again with the conduit's own verifier key (SPKI SHA-256 %s)", v, b.conduit.spki)
 		}
 	}
 	if len(handle) > 0 {
