@@ -356,7 +356,7 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 	if err != nil {
 		return "", RRP{}, secondLeg{}, err
 	}
-	nonce := est.BindingDigest(handle, rrp.RRPID, target, subject)
+	nonce := bindingValue(handle, target, rrp.RRPID, subject)
 	ear, err := b.verify(ctx, evidence, p, nonce)
 	if err != nil {
 		return "", RRP{}, secondLeg{}, err
