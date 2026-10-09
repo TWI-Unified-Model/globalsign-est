@@ -93,6 +93,10 @@ const (
 // baseline the specification will ultimately mandate.
 const EncECDHP256 = "ECDH-P256+HKDF-SHA256+A256GCM"
 
+// SigECDSAP256SHA256 is the CSK signature algorithm an attest-initiate response
+// offers for Enrollment (acceptable_csk).
+const SigECDSAP256SHA256 = "ecdsa-p256-sha256"
+
 // Mock TEE evidence identifiers. These values define the non-production EAT
 // profile appraised by the mock Verifier.
 const (

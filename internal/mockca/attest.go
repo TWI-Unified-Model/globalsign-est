@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -271,7 +272,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 	if mechanism == est.MechanismRetrieve {
 		resp.AcceptableCEK = []string{est.EncECDHP256}
 	} else {
-		resp.AcceptableCSK = []string{"ecdsa-p256-sha256"}
+		resp.AcceptableCSK = []string{est.SigECDSAP256SHA256}
 	}
 
 	return resp, nil
@@ -439,6 +440,13 @@ func (ca *AttestedCA) verifyEvidence(
 		}
 	}
 
+	// VerifyMockEvidence accepts the one issuer est.MockTEEProviderID, which has
+	// no ":", and hex has none, so issuer and PCR are recoverable from Subject;
+	// should that guarantee ever change, the construction refuses rather than
+	// produce an ambiguous Subject.
+	if strings.ContainsRune(claims.Issuer, ':') {
+		return nil, caError{status: http.StatusInternalServerError, desc: "attestation failed: issuer contains ':'"}
+	}
 	subjectHex := hex.EncodeToString(claims.PCRs[est.MockTEEWorkloadPCR])
 
 	return &attestationResults{
