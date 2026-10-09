@@ -61,6 +61,10 @@ type RRP struct {
 	CA    string `json:"ca"`     // CA of its TLS certificate
 	RRPID string `json:"rrp_id"` // the identifier it binds; checked against its attest-initiate answers
 	Mode  string `json:"mode"`   // "enroll" or "retrieve"
+	// OmitRRPIDInBinding, when set, makes this server compute the Verifier session's nonce with an empty RRP
+	// identifier, as the RRP gateway recomputes the binding then (the #20 variant: TACRA as if Section 4.5 carried
+	// none); the identifier is still checked against the RRP's attest-initiate answers.
+	OmitRRPIDInBinding bool `json:"omit_rrp_id_in_binding,omitempty"`
 	// RATSModel: "passport" (the default), this server obtains the Attestation Results; "background-check", the
 	// RRP does, from the Evidence this server forwards
 	RATSModel string `json:"rats_model,omitempty"`
@@ -233,6 +237,14 @@ func (b *Backend) route(target string) (string, RRP, error) {
 		return "", RRP{}, fail(http.StatusForbidden, "unsupported Target")
 	}
 	return name, b.cfg.RRPs[name], nil
+}
+
+// boundID is the RRP identifier the binding value is computed with: the RRP's own, or none in the #20 variant.
+func (r RRP) boundID() string {
+	if r.OmitRRPIDInBinding {
+		return ""
+	}
+	return r.RRPID
 }
 
 // gatewayInitiation is an RRP gateway's answer to attest-initiate. RRPID is checked against this server's
@@ -493,7 +505,7 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 		if err != nil {
 			return "", RRP{}, secondLeg{}, err
 		}
-		nonce := bindingValue(handle, target, rrp.RRPID, subject)
+		nonce := bindingValue(handle, target, rrp.boundID(), subject)
 		if leg.EAR, err = b.verify(ctx, v, evidence, p, nonce); err != nil {
 			return "", RRP{}, secondLeg{}, err
 		}

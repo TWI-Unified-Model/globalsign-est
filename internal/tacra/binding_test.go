@@ -23,3 +23,20 @@ func TestBindingValueTestVector(t *testing.T) {
 		t.Fatal("est.BindingDigest now gives the TACRA order: this backend can use it again")
 	}
 }
+
+// The #20 variant: with OmitRRPIDInBinding the server binds no identifier, as an RRP that omits it recomputes.
+func TestBoundID(t *testing.T) {
+	r := RRP{RRPID: "https://ca1.tacra.example"}
+	if r.boundID() != r.RRPID {
+		t.Errorf("boundID %q, want the RRP's own", r.boundID())
+	}
+	r.OmitRRPIDInBinding = true
+	if r.boundID() != "" {
+		t.Errorf("boundID %q with the identifier omitted, want none", r.boundID())
+	}
+	subject := []byte("a CSR")
+	if !bytes.Equal(bindingValue(nil, "https://db.tacra.example", r.boundID(), subject),
+		bindingValue(nil, "https://db.tacra.example", "", subject)) {
+		t.Error("the omitted identifier does not bind as the empty string")
+	}
+}
