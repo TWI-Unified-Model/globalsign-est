@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -214,13 +215,13 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 		r.Get(attestInitiateEndpoint, attestInitiate)
 
 		r.With(
-			requireContentType(mimeTypeJSON, mimeTypeAttestEnroll),
+			requireMediaType(mimeTypeAttestEnroll),
 		).With(
 			requireBasicAuth(cfg.CheckBasicAuth, true),
 		).Post(attestEnrollEndpoint, attestEnroll)
 
 		r.With(
-			requireContentType(mimeTypeJSON, mimeTypeAttestRetrieve),
+			requireMediaType(mimeTypeAttestRetrieve),
 		).With(
 			requireBasicAuth(cfg.CheckBasicAuth, true),
 		).Post(attestRetrieveEndpoint, attestRetrieve)
@@ -259,13 +260,13 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 			r.Get(attestInitiateEndpoint, attestInitiate)
 
 			r.With(
-				requireContentType(mimeTypeJSON),
+				requireMediaType(mimeTypeAttestEnroll),
 			).With(
 				requireBasicAuth(cfg.CheckBasicAuth, true),
 			).Post(attestEnrollEndpoint, attestEnroll)
 
 			r.With(
-				requireContentType(mimeTypeJSON),
+				requireMediaType(mimeTypeAttestRetrieve),
 			).With(
 				requireBasicAuth(cfg.CheckBasicAuth, true),
 			).Post(attestRetrieveEndpoint, attestRetrieve)
@@ -636,20 +637,32 @@ func recoverer(logger Logger) func(next http.Handler) http.Handler {
 
 // requireContentType is middleware which rejects a request if the content
 // type is not as stated.
-func requireContentType(t string, more ...string) func(next http.Handler) http.Handler {
+func requireContentType(t string) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			err := verifyRequestType(r.Header.Get(contentTypeHeader), t)
-			for _, m := range more { // any of the types a resource accepts
-				if err == nil {
-					break
-				}
-				if verifyRequestType(r.Header.Get(contentTypeHeader), m) == nil {
-					err = nil
-				}
-			}
-			if err != nil {
+			if err := verifyRequestType(r.Header.Get(contentTypeHeader), t); err != nil {
 				writeOnError(r.Context(), w, logMsgContentTypeInvalid, err)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireMediaType is middleware which rejects with 415 a request whose media
+// type is not t: the type and subtype compared without regard to case (RFC
+// 9110, Section 8.3.1), parameters not considered. The 415 names t in an
+// Accept header (RFC 9110, Section 15.5.16). Unlike requireContentType, it
+// takes no other type that begins with t.
+func requireMediaType(t string) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if mediaType, _, err := mime.ParseMediaType(r.Header.Get(contentTypeHeader)); err != nil || mediaType != t {
+				w.Header().Set(acceptHeader, t)
+				writeOnError(r.Context(), w, logMsgContentTypeInvalid, &estError{
+					status: http.StatusUnsupportedMediaType,
+					desc:   fmt.Sprintf("%s must be %s", contentTypeHeader, t),
+				})
 				return
 			}
 			next.ServeHTTP(w, r)

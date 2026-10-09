@@ -221,9 +221,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 
 	resp := &est.AttestationInitiateResponse{
 		FreshnessKind:      freshnessKind,
-		ServerID:           attestServerID,
 		AcceptableEvidence: []string{est.MockEATProfileType},
-		RequiredBindings:   []string{est.BindingInput},
 		Mechanism:          mechanism,
 	}
 

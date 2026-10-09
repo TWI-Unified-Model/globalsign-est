@@ -72,10 +72,11 @@ const (
 
 // Request-level CSR and CEK association methods.
 const (
-	// BindingInput identifies the direct-form binding of RFC binding-input
-	// {binding-input}: a single digest, carried in a guest-chosen Evidence
-	// field, over the Freshness element, server_id, Target and CSR/CEKpub.
-	// It is the only method this mock Verifier accepts.
+	// BindingInput identifies the direct-form binding of TACRA's Section
+	// "Binding Credential Keys to Evidence": a single digest, carried in a
+	// guest-chosen Evidence field, over the freshness element, Target, RRP
+	// identifier and CSR/CEKpub (internal/tacra/binding.go). It is the method
+	// the attested requests name (Binding.Method).
 	BindingInput = "binding-input"
 
 	// BindingCSRHash identifies the enrollment request's CSR hash association.
@@ -146,19 +147,16 @@ type AttestationCA interface {
 
 // AttestationInitiateResponse is returned by the attest-initiate resource. It
 // carries the CAAPI InitiateCredentialAcquisitionResponse fields: Mechanism
-// corresponds to mechanism, and Handle to the optional challenge. ServerID
-// identifies the EST Server the returned Handle and mode were issued by; the
-// Attester MUST compare it with the server configured for the Target and MUST
-// NOT produce Evidence on mismatch.
+// corresponds to mechanism, and Handle to the optional challenge. It names no
+// RATS Relying Party: the Attester binds the identifier it holds for the
+// Target and mode, never one from the CAS (TACRA, "Binding Credential Keys to
+// Evidence").
 type AttestationInitiateResponse struct {
 	FreshnessKind      string   `json:"freshness_kind"`
 	Handle             B64URL   `json:"handle,omitempty"`
-	ServerID           string   `json:"server_id,omitempty"`
-	RRPID              string   `json:"rrp_id,omitempty"` // revised draft: the RRP that relies on the Evidence
 	ExpiresIn          int      `json:"expires_in,omitempty"`
 	MaxAge             int      `json:"max_age,omitempty"`
 	AcceptableEvidence []string `json:"acceptable_evidence,omitempty"`
-	RequiredBindings   []string `json:"required_bindings,omitempty"`
 	AcceptableCSK      []string `json:"acceptable_csk,omitempty"`
 	AcceptableCEK      []string `json:"acceptable_cek,omitempty"`
 	Mechanism          string   `json:"mode,omitempty"`
@@ -180,7 +178,6 @@ type AttestedEnrollmentRequest struct {
 	Handle         B64URL  `json:"handle,omitempty"`
 	CSR            B64URL  `json:"csr"`
 	Evidence       B64URL  `json:"evidence"`
-	Endorsements   B64URL  `json:"endorsements,omitempty"`
 	Binding        Binding `json:"binding"`
 	Profile        string  `json:"profile,omitempty"`
 	CredentialHint *string `json:"credential_hint,omitempty"`
@@ -194,7 +191,6 @@ type AttestedRetrievalRequest struct {
 	Handle         B64URL  `json:"handle,omitempty"`
 	CEKPub         B64URL  `json:"cek_pub"`
 	Evidence       B64URL  `json:"evidence"`
-	Endorsements   B64URL  `json:"endorsements,omitempty"`
 	Binding        Binding `json:"binding"`
 	Profile        string  `json:"profile,omitempty"`
 	CredentialHint *string `json:"credential_hint,omitempty"`
@@ -616,20 +612,9 @@ func attestationCAFromContext(ctx context.Context) AttestationCA {
 	return aca
 }
 
-// decodeJSONRequest decodes a JSON request body, rejecting unknown fields.
-func decodeJSONRequest(r *http.Request, v interface{}) error {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(v); err != nil {
-		return errInvalidJSON
-	}
-
-	return nil
-}
-
-// writeJSONResponse marshals and writes a JSON response body.
-func writeJSONResponse(ctx context.Context, w http.ResponseWriter, v interface{}) {
+// writeJSONResponse marshals and writes a JSON response body of the given media
+// type.
+func writeJSONResponse(ctx context.Context, w http.ResponseWriter, contentType string, v interface{}) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		LoggerFromContext(ctx).Errorf("failed to marshal JSON response: %v", err)
@@ -637,7 +622,7 @@ func writeJSONResponse(ctx context.Context, w http.ResponseWriter, v interface{}
 		return
 	}
 
-	writeResponse(w, mimeTypeJSON, false, body)
+	writeResponse(w, contentType, false, body)
 }
 
 // attestInitiate services the /attest-initiate endpoint.
@@ -662,7 +647,7 @@ func attestInitiate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSONResponse(ctx, w, resp)
+	writeJSONResponse(ctx, w, mimeTypeAttestInitiate, resp)
 }
 
 // attestEnroll services the /attest-enroll endpoint.
@@ -677,7 +662,7 @@ func attestEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req AttestedEnrollmentRequest
-	if err := decodeJSONRequest(r, &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
+	if err := decodeAttestedRequest(r, "csr", &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
 		return
 	}
 
@@ -701,7 +686,7 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req AttestedRetrievalRequest
-	if err := decodeJSONRequest(r, &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
+	if err := decodeAttestedRequest(r, "cek_pub", &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
 		return
 	}
 
@@ -711,7 +696,7 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 		if writeOnError(ctx, w, logMsgAttestRetrieveFailed, err) {
 			return
 		}
-		writeResponse(w, mimeTypeJSON, false, body)
+		writeResponse(w, mimeTypeAttestBundle, false, body)
 		return
 	}
 
@@ -720,7 +705,7 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSONResponse(ctx, w, bundle)
+	writeJSONResponse(ctx, w, mimeTypeAttestBundle, bundle)
 }
 
 // RawRetriever is implemented by an AttestationCA whose Secret Vault produces the

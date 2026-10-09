@@ -76,3 +76,22 @@ func TestExpiredOrUnknown(t *testing.T) {
 		t.Fatalf("a kind without a Handle: %d, want 200 (the RRP checks it)", got)
 	}
 }
+
+// A second leg refused for its Evidence format (415) leaves its Handle to the next request: the server checks the format
+// before it correlates the Handle, as the draft's processing validates the media type first.
+func TestFormatRefusalLeavesTheHandle(t *testing.T) {
+	const target = "https://db-nonce.tacra.example"
+	b := &Backend{sessions: map[string][]session{},
+		cfg: Config{RRPs: map[string]RRP{"ca": {RRPID: "https://ca1.tacra.example", Mode: est.MechanismEnroll}},
+			Targets: map[string]string{target: "ca"}, AcceptableEvidence: []string{"application/vnd.veraison.tsm-report+cbor"}}}
+	handle := []byte("a present-nonce Handle of 32 o.")
+	b.remember(hex.EncodeToString(handle), session{target, "x509", "ca", est.FreshnessPresentNonce, time.Now().Add(time.Minute)})
+	_, err := b.EnrollCredential(t.Context(), &est.AttestedEnrollmentRequest{Target: target, CredentialType: "x509",
+		FreshnessKind: est.FreshnessPresentNonce, Handle: handle, Profile: "application/vnd.example.unknown"}, "", nil)
+	if got := status(err); got != http.StatusUnsupportedMediaType {
+		t.Fatalf("an Evidence format not accepted: %d (%v), want 415", got, err)
+	}
+	if got := status(b.correlate(est.FreshnessPresentNonce, handle, target, "x509")); got != http.StatusOK {
+		t.Fatalf("the Handle after the 415: %d, want 200: the refusal used it up", got)
+	}
+}

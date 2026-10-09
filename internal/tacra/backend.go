@@ -235,40 +235,80 @@ func (b *Backend) route(target string) (string, RRP, error) {
 	return name, b.cfg.RRPs[name], nil
 }
 
+// gatewayInitiation is an RRP gateway's answer to attest-initiate. RRPID is checked against this server's
+// configuration and goes no further: the Attester binds the identifier it holds itself.
+type gatewayInitiation struct {
+	FreshnessKind string   `json:"freshness_kind"`
+	Handle        string   `json:"handle"`
+	RRPID         string   `json:"rrp_id"`
+	ExpiresIn     int      `json:"expires_in"`
+	MaxAge        int      `json:"max_age"`
+	Mode          string   `json:"mode"`
+	AcceptableCSK []string `json:"acceptable_csk"`
+	AcceptableCEK []string `json:"acceptable_cek"`
+}
+
 // InitiateRemoteAttestation obtains the Freshness Kind and Handle from the RRP that serves the Target.
 func (b *Backend) InitiateRemoteAttestation(ctx context.Context, target, credentialType, aps string, r *http.Request) (*est.AttestationInitiateResponse, error) {
 	name, rrp, err := b.route(target)
 	if err != nil {
 		return nil, err
 	}
-	var g struct {
-		FreshnessKind string   `json:"freshness_kind"`
-		Handle        string   `json:"handle"`
-		RRPID         string   `json:"rrp_id"`
-		ExpiresIn     int      `json:"expires_in"`
-		MaxAge        int      `json:"max_age"`
-		Mode          string   `json:"mode"`
-		AcceptableCSK []string `json:"acceptable_csk"`
-		AcceptableCEK []string `json:"acceptable_cek"`
-	}
+	var g gatewayInitiation
 	if _, err := b.post(ctx, name, "/tacra/v1/initiate", map[string]string{"target": target, "credential_type": credentialType}, &g); err != nil {
 		return nil, err
 	}
 	if g.RRPID != rrp.RRPID || g.Mode != rrp.Mode {
 		return nil, fail(http.StatusBadGateway, "RRP %s answered as %s/%s, configured as %s/%s", name, g.RRPID, g.Mode, rrp.RRPID, rrp.Mode)
 	}
-	handle, err := base64.RawURLEncoding.DecodeString(g.Handle)
+	resp, err := initiation(g, b.cfg.AcceptableEvidence)
 	if err != nil {
-		return nil, fail(http.StatusBadGateway, "RRP %s: Handle is not base64url", name)
+		return nil, fail(http.StatusBadGateway, "RRP %s: %v", name, err)
 	}
-	if len(handle) > 0 {
-		b.remember(hex.EncodeToString(handle), session{target, credentialType, name, g.FreshnessKind,
+	if len(resp.Handle) > 0 {
+		b.remember(hex.EncodeToString(resp.Handle), session{target, credentialType, name, g.FreshnessKind,
 			time.Now().Add(time.Duration(g.ExpiresIn) * time.Second)})
 	}
-	return &est.AttestationInitiateResponse{FreshnessKind: g.FreshnessKind, Handle: handle, RRPID: g.RRPID,
-		ExpiresIn: g.ExpiresIn, MaxAge: g.MaxAge, AcceptableEvidence: b.cfg.AcceptableEvidence,
-		RequiredBindings: []string{est.BindingInput}, AcceptableCSK: g.AcceptableCSK, AcceptableCEK: g.AcceptableCEK,
-		Mechanism: g.Mode}, nil
+	return resp, nil
+}
+
+// initiation is the attest-initiate response to an RRP gateway's answer g: of g's members, those the CDDL of the wire
+// format proposed for draft-novak-lamps-tacra-est (attestation-initiation-response) gives its Freshness Kind and mode,
+// and no others. An answer that breaks the rule
+// of the Handle (present-nonce and present-epoch carry one, the absent-* kinds none) is refused, so that the server
+// sends no response the CDDL does not define.
+func initiation(g gatewayInitiation, acceptableEvidence []string) (*est.AttestationInitiateResponse, error) {
+	handle, err := base64.RawURLEncoding.DecodeString(g.Handle)
+	if err != nil {
+		return nil, errors.New("Handle is not base64url")
+	}
+	resp := &est.AttestationInitiateResponse{FreshnessKind: g.FreshnessKind, Mechanism: g.Mode,
+		AcceptableEvidence: acceptableEvidence}
+	switch g.FreshnessKind {
+	case est.FreshnessPresentNonce, est.FreshnessPresentEpoch:
+		if len(handle) == 0 {
+			return nil, fmt.Errorf("%s without a Handle", g.FreshnessKind)
+		}
+		resp.Handle, resp.ExpiresIn = handle, g.ExpiresIn
+	case est.FreshnessAbsentTimestamp, est.FreshnessAbsentEpoch, est.FreshnessAbsentNone:
+		if len(handle) > 0 {
+			return nil, fmt.Errorf("%s with a Handle", g.FreshnessKind)
+		}
+		if g.FreshnessKind == est.FreshnessAbsentTimestamp {
+			resp.MaxAge = g.MaxAge
+		}
+	default:
+		return nil, fmt.Errorf("unknown Freshness Kind %q", g.FreshnessKind)
+	}
+	switch g.Mode {
+	case est.MechanismEnroll:
+		resp.AcceptableCSK = g.AcceptableCSK
+	case est.MechanismRetrieve:
+		resp.AcceptableCEK = g.AcceptableCEK
+	default:
+		return nil, fmt.Errorf("unknown mode %q", g.Mode)
+	}
+	return resp, nil
 }
 
 // remember keeps the session of an attest-initiate under its Handle, in place of an earlier one for the same Target,
@@ -435,11 +475,13 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 	if rrp.Mode != mode {
 		return "", RRP{}, secondLeg{}, fail(http.StatusForbidden, "the Target is provisioned by %s, not %s", rrp.Mode, mode)
 	}
-	if err := b.correlate(kind, handle, target, credentialType); err != nil {
-		return "", RRP{}, secondLeg{}, err
-	}
+	// the Evidence format before the Handle: a request refused for its format (415) leaves the Handle to the next one,
+	// as the draft's processing validates the media type before it correlates the Handle
 	p, err := b.profile(profile)
 	if err != nil {
+		return "", RRP{}, secondLeg{}, err
+	}
+	if err := b.correlate(kind, handle, target, credentialType); err != nil {
 		return "", RRP{}, secondLeg{}, err
 	}
 	leg := secondLeg{FreshnessKind: kind, Target: target, CredentialType: credentialType, CredentialHint: hint(hintp)}

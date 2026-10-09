@@ -38,7 +38,7 @@ const (
 
 // Query parameter names for attest-initiate. TACRA requires the target and
 // credential type to be validated, which the EST draft's parameterless GET
-// cannot convey.
+// cannot convey (what attest-initiate carries is TheBankster/rats-tacra#19).
 const (
 	attestCredentialTypeParam = "credential_type"
 	attestTargetParam         = "target"
@@ -55,10 +55,15 @@ const (
 	mimeTypeCertificate      = "application/pkix-cert"
 	mimeTypeCSRAttrs         = "application/csrattrs"
 	mimeTypeJSON             = "application/json"
-	// The attested requests' own media types, as the reference implementation sends them
-	// (draft-novak-lamps-tacra-est asks IANA for media types and does not name them yet).
+	// The media types of the attest-* resources' JSON messages, one for each message type, as each EST message type
+	// has its own (RFC 7030, Section 3.2.4): the attest-initiate response, the attest-enroll request (its response is
+	// simpleenroll's), the attest-retrieve request, and its response, the EncryptedCredentialBundle. The wire format
+	// proposed for draft-novak-lamps-tacra-est asks IANA to register them; the names are the ones the reference
+	// implementation uses.
+	mimeTypeAttestInitiate = "application/est-attest-initiate+json"
 	mimeTypeAttestEnroll   = "application/est-attest-enroll+json"
 	mimeTypeAttestRetrieve = "application/est-attest-retrieve+json"
+	mimeTypeAttestBundle   = "application/est-attest-bundle+json"
 	mimeTypeMultipart      = "multipart/mixed"
 	mimeTypeOctetStream    = "application/octet-stream"
 	mimeTypePKCS10         = "application/pkcs10"

@@ -68,8 +68,28 @@ func decodeStrict(raw []byte, v any) error {
 	return d.Decode(v)
 }
 
+// withoutRRPID is an attest-initiate response of the reference implementation without its rrp_id, which the wire no
+// longer carries: the Attester binds the identifier it holds for the Target and mode, never one from the CAS.
+func withoutRRPID(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["rrp_id"]; !ok {
+		t.Fatalf("the reference response has no rrp_id: %s", raw)
+	}
+	delete(m, "rrp_id")
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // TestRefEnvelopesRoundTrip: each message of the reference implementation decodes into this package's types with
-// no member unknown, and encodes back to the same JSON, member for member.
+// no member unknown, and encodes back to the same JSON, member for member; its attest-initiate responses once rrp_id,
+// which they still carry, is taken out.
 func TestRefEnvelopesRoundTrip(t *testing.T) {
 	v := loadRefVectors(t)
 	for name, c := range map[string]struct {
@@ -78,8 +98,8 @@ func TestRefEnvelopesRoundTrip(t *testing.T) {
 	}{
 		"AttestedEnrollmentRequest":                {v.Enrollment.Request, &est.AttestedEnrollmentRequest{}},
 		"AttestedRetrievalRequest":                 {v.Retrieval.Request, &est.AttestedRetrievalRequest{}},
-		"AttestationInitiationResponse (enroll)":   {v.Enrollment.Initiation, &est.AttestationInitiateResponse{}},
-		"AttestationInitiationResponse (retrieve)": {v.Retrieval.Initiation, &est.AttestationInitiateResponse{}},
+		"AttestationInitiationResponse (enroll)":   {withoutRRPID(t, v.Enrollment.Initiation), &est.AttestationInitiateResponse{}},
+		"AttestationInitiationResponse (retrieve)": {withoutRRPID(t, v.Retrieval.Initiation), &est.AttestationInitiateResponse{}},
 	} {
 		if err := decodeStrict(c.raw, c.v); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -109,8 +129,10 @@ func TestRefEnvelopesRoundTrip(t *testing.T) {
 	}
 }
 
-// TestB64URLCompat: bstr members are written as unpadded base64url and read in either encoding.
-func TestB64URLCompat(t *testing.T) {
+// TestB64URLStrict: byte strings are written as unpadded base64url, and read only as the CDDL's .b64u takes them (RFC
+// 9741, Section 2.1): not in standard base64, not padded, not with a line break, not with a bit set that encodes no
+// octet.
+func TestB64URLStrict(t *testing.T) {
 	octets := []byte{0xfb, 0xff, 0xbf, 0x00, 0x01}
 	out, err := json.Marshal(est.AttestedEnrollmentRequest{Handle: octets})
 	if err != nil {
@@ -119,15 +141,20 @@ func TestB64URLCompat(t *testing.T) {
 	if !strings.Contains(string(out), `"handle":"-_-_AAE"`) {
 		t.Fatalf("handle written as %s, want unpadded base64url", out)
 	}
-	for _, enc := range []string{"-_-_AAE", base64.StdEncoding.EncodeToString(octets)} {
-		var r est.AttestedEnrollmentRequest
-		if err := json.Unmarshal([]byte(`{"handle":"`+enc+`","csr":"","evidence":"","target":"t","freshness_kind":"present-nonce","binding":{"method":"binding-input"}}`), &r); err != nil {
-			t.Fatalf("%s: %v", enc, err)
+	for enc, ok := range map[string]bool{
+		"-_-_AAE": true,
+		base64.StdEncoding.EncodeToString(octets): false, // +/+/AAE=
+		"-_-_AAE=":  false,
+		"-_-_\nAAE": false, // Go's base64 decoder alone takes it
+		"-_-_AAF":   false, // F: the two bits after the last octet are 01
+	} {
+		var b est.B64URL
+		err := json.Unmarshal([]byte(`"`+enc+`"`), &b)
+		if ok && (err != nil || !bytes.Equal(b, octets)) {
+			t.Errorf("%s: %x, %v; want %x", enc, []byte(b), err, octets)
 		}
-		if !bytes.Equal(r.Handle, octets) {
-			t.Fatalf("%s decoded to %x", enc, r.Handle)
+		if !ok && err == nil {
+			t.Errorf("%s: decoded to %x, want a refusal", enc, []byte(b))
 		}
 	}
 }
-
-// refCA is an attesting CA that records what the EST server hands it.

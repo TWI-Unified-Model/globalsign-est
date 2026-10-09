@@ -83,7 +83,7 @@ func TestWireLogRecordsTheExchange(t *testing.T) {
 		{"attest-retrieve under a CA label, as text/plain", http.MethodPost,
 			"/.well-known/est/arbitraryLabel1/attest-retrieve", "text/plain", enroll, true},
 		{"attest-enroll, over the size limit", http.MethodPost, "/.well-known/est/attest-enroll",
-			"application/json", oversize, true},
+			"application/est-attest-enroll+json", oversize, true},
 		{"cacerts", http.MethodGet, "/.well-known/est/cacerts", "", nil, false},
 	}
 
@@ -139,7 +139,8 @@ func TestWireLogRecordsTheExchange(t *testing.T) {
 		}
 	}
 	// what each refusal was, so that the cases test what they say
-	for i, st := range []int{http.StatusForbidden, http.StatusForbidden, http.StatusUnsupportedMediaType, http.StatusBadRequest} {
+	for i, st := range []int{http.StatusForbidden, http.StatusForbidden, http.StatusUnsupportedMediaType,
+		http.StatusRequestEntityTooLarge} {
 		if lines[i].Status != st {
 			t.Errorf("%s: status %d, want %d", cases[i].name, lines[i].Status, st)
 		}
