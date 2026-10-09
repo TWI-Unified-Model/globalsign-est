@@ -22,6 +22,7 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -63,6 +64,16 @@ type ServerConfig struct {
 	// is nil, then HTTP Basic Authentication is not required for any EST
 	// operation, but access to the /healthcheck endpoint will be blocked.
 	CheckBasicAuth func(ctx context.Context, r *http.Request, aps, username, password string) error
+
+	// WireLog is an optional writer that receives one JSON object per line for
+	// every exchange on an attest-* resource: the request (method, path, query,
+	// Content-Type and body) and the response (status, Content-Type and body),
+	// as they crossed the wire. Nothing in them is secret from the EST server,
+	// which TACRA treats as a conduit: Evidence, CSRs, CEKpub, Freshness
+	// Handles, certificates, and credential bundles encrypted to CEKpub.
+	// Headers other than Content-Type, Authorization among them, are not
+	// recorded.
+	WireLog io.Writer
 }
 
 // ctxKey is an unexported custom type for request context keys.
@@ -154,6 +165,9 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 		r.Use(verifyAllowedHosts(cfg.AllowedHosts))
 	}
 	r.Use(maxBodySize(65536))
+	if cfg.WireLog != nil {
+		r.Use(withWireLog(cfg.WireLog))
+	}
 	if cfg.RateLimit != 0 {
 		r.Use(rateLimit(cfg.RateLimit))
 	}

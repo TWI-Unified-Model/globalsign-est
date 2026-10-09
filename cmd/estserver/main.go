@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -129,6 +130,18 @@ func main() {
 			log.Fatalf("failed to open log file: %v", err)
 		}
 		logger = basiclogger.New(f)
+		defer f.Close()
+	}
+
+	// The optional wire log: every exchange on an attest-* resource, request and
+	// response, as it crossed the wire (est.ServerConfig.WireLog).
+	var wireLog io.Writer
+	if cfg.WireLog != "" {
+		f, err := os.OpenFile(cfg.WireLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			log.Fatalf("failed to open the wire log: %v", err)
+		}
+		wireLog = f
 		defer f.Close()
 	}
 
@@ -270,6 +283,7 @@ func main() {
 	r, err := est.NewRouter(&est.ServerConfig{
 		CA:             serverCA,
 		Logger:         logger,
+		WireLog:        wireLog,
 		AllowedHosts:   cfg.AllowedHosts,
 		Timeout:        time.Duration(cfg.Timeout) * time.Second,
 		RateLimit:      cfg.RateLimit,

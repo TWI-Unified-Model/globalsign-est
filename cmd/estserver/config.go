@@ -42,6 +42,7 @@ type config struct {
 	RateLimit           int           `json:"rate_limit"`
 	Timeout             int           `json:"timeout"`
 	Logfile             string        `json:"log_file"`
+	WireLog             string        `json:"wire_log,omitempty"` // every attest-* exchange, as it crossed the wire
 }
 
 // attestConfig contains the attested credential acquisition configuration.
@@ -144,7 +145,8 @@ const sample = `{
     "healthcheck_password": "xyzzy",
     "rate_limit": 150,
     "timeout": 30,
-    "log_file": "/path/to/log.file"
+    "log_file": "/path/to/log.file",
+    "wire_log": "/path/to/wire.log"
 }`
 
 // sampleConfig outputs a sample configuration file.
