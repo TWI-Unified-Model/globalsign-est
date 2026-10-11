@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"net/url"
 )
@@ -36,7 +38,7 @@ func (c *Client) InitiateRemoteAttestation(
 		endpoint += "?" + q.Encode()
 	}
 
-	req, err := c.newRequest(ctx, http.MethodGet, endpoint, "", "", mimeTypeJSON, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, endpoint, "", "", mimeTypeAttestInitiate, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +55,10 @@ func (c *Client) InitiateRemoteAttestation(
 	defer consumeAndClose(resp.Body)
 
 	if err := checkResponseError(resp); err != nil {
+		return nil, err
+	}
+
+	if err := verifyMediaType(resp, mimeTypeAttestInitiate); err != nil {
 		return nil, err
 	}
 
@@ -74,7 +80,7 @@ func (c *Client) EnrollCredential(
 	ctx context.Context,
 	ar *AttestedEnrollmentRequest,
 ) (*x509.Certificate, error) {
-	resp, err := c.postAttest(ctx, attestEnrollEndpoint, ar, mimeTypePKCS7)
+	resp, err := c.postAttest(ctx, attestEnrollEndpoint, mimeTypeAttestEnroll, ar, mimeTypePKCS7)
 	if err != nil {
 		return nil, err
 	}
@@ -98,11 +104,15 @@ func (c *Client) RetrieveCredential(
 	ctx context.Context,
 	ar *AttestedRetrievalRequest,
 ) (*EncryptedCredentialBundle, error) {
-	resp, err := c.postAttest(ctx, attestRetrieveEndpoint, ar, mimeTypeJSON)
+	resp, err := c.postAttest(ctx, attestRetrieveEndpoint, mimeTypeAttestRetrieve, ar, mimeTypeAttestBundle)
 	if err != nil {
 		return nil, err
 	}
 	defer consumeAndClose(resp.Body)
+
+	if err := verifyMediaType(resp, mimeTypeAttestBundle); err != nil {
+		return nil, err
+	}
 
 	var out EncryptedCredentialBundle
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -112,11 +122,30 @@ func (c *Client) RetrieveCredential(
 	return &out, nil
 }
 
-// postAttest marshals and POSTs a JSON attestation request, returning the
-// response for the caller to decode. The caller must close the response body.
+// RetrieveCredentialRaw performs the second leg of Attested Retrieval Mode and
+// returns the EncryptedCredentialBundle exactly as the server sent it, for an
+// Attester that opens the container of the revised EST profile itself.
+func (c *Client) RetrieveCredentialRaw(ctx context.Context, ar *AttestedRetrievalRequest) ([]byte, error) {
+	resp, err := c.postAttest(ctx, attestRetrieveEndpoint, mimeTypeAttestRetrieve, ar, mimeTypeAttestBundle)
+	if err != nil {
+		return nil, err
+	}
+	defer consumeAndClose(resp.Body)
+
+	if err := verifyMediaType(resp, mimeTypeAttestBundle); err != nil {
+		return nil, err
+	}
+
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// postAttest marshals and POSTs a JSON attestation request as contentType,
+// returning the response for the caller to decode. The caller must close the
+// response body.
 func (c *Client) postAttest(
 	ctx context.Context,
 	endpoint string,
+	contentType string,
 	payload interface{},
 	accepts string,
 ) (*http.Response, error) {
@@ -125,7 +154,7 @@ func (c *Client) postAttest(
 		return nil, fmt.Errorf("failed to marshal attestation request: %w", err)
 	}
 
-	req, err := c.newRequest(ctx, http.MethodPost, endpoint, mimeTypeJSON, "", accepts, bytes.NewReader(body))
+	req, err := c.newRequest(ctx, http.MethodPost, endpoint, contentType, "", accepts, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -146,4 +175,17 @@ func (c *Client) postAttest(
 	}
 
 	return resp, nil
+}
+
+// verifyMediaType returns an error unless the media type of the response is t,
+// compared without regard to case and parameters (RFC 9110, Section 8.3.1).
+func verifyMediaType(r *http.Response, t string) error {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get(contentTypeHeader))
+	if err != nil {
+		return fmt.Errorf("missing or malformed %s header: %w", contentTypeHeader, err)
+	}
+	if mediaType != t {
+		return fmt.Errorf("unexpected %s: %s, not %s", contentTypeHeader, mediaType, t)
+	}
+	return nil
 }

@@ -12,7 +12,9 @@ import (
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,20 +22,34 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/v5"
 	"github.com/veraison/eat"
 	"github.com/veraison/go-cose"
 )
 
 // Freshness kinds carried in AttestationInitiateResponse.FreshnessKind.
 const (
-	// FreshnessPresentNonce is a single-use Handle originated by the Verifier
-	// or Relying Party which the Attester must embed in Evidence.
-	FreshnessPresentNonce = "present-nonce"
+	// FreshnessAbsentTimestamp uses the Attester's trusted clock. Evidence has
+	// no Handle and its issued-at claim is checked against the configured
+	// maximum age.
+	FreshnessAbsentTimestamp = "absent-timestamp"
 
 	// FreshnessAbsentNone carries no freshness claim. The EST client may
 	// complete attest-initiate locally without contacting the EST server.
 	FreshnessAbsentNone = "absent-none"
+
+	// FreshnessAbsentEpoch uses an epoch marker already held by the Attester.
+	// Initiation returns no Handle, but the marker is carried in the second-leg
+	// Handle field and embedded in Evidence.
+	FreshnessAbsentEpoch = "absent-epoch"
+
+	// FreshnessPresentNonce is a single-use Handle originated by the Verifier
+	// or Relying Party which the Attester must embed in Evidence.
+	FreshnessPresentNonce = "present-nonce"
+
+	// FreshnessPresentEpoch is the current epoch marker returned by the
+	// Verifier or Relying Party and embedded by the Attester in Evidence.
+	FreshnessPresentEpoch = "present-epoch"
 )
 
 // Credential acquisition mechanisms returned by attest-initiate. These mirror
@@ -56,10 +72,20 @@ const (
 
 // Request-level CSR and CEK association methods.
 const (
+	// BindingInput identifies the direct-form binding of TACRA's Section
+	// "Binding Credential Keys to Evidence": a single digest, carried in a
+	// guest-chosen Evidence field, over the freshness element, Target, RRP
+	// identifier and CSR/CEKpub (internal/tacra/binding.go). It is the method
+	// the attested requests name (Binding.Method).
+	BindingInput = "binding-input"
+
 	// BindingCSRHash identifies the enrollment request's CSR hash association.
+	// Retained for documentation only: it binds Evidence to the CSR but not
+	// to the Target, so this mock no longer accepts it alone.
 	BindingCSRHash = "csr-hash"
 
 	// BindingCEKThumbprint identifies the retrieval request's CEK association.
+	// Retained for documentation only; see BindingCSRHash.
 	BindingCEKThumbprint = "cek-thumbprint"
 )
 
@@ -67,6 +93,10 @@ const (
 // EncryptedCredentialBundle to CEKpub. It is a POC stand-in for the HPKE
 // baseline the specification will ultimately mandate.
 const EncECDHP256 = "ECDH-P256+HKDF-SHA256+A256GCM"
+
+// SigECDSAP256SHA256 is the CSK signature algorithm an attest-initiate response
+// offers for Enrollment (acceptable_csk).
+const SigECDSAP256SHA256 = "ecdsa-p256-sha256"
 
 // Mock TEE evidence identifiers. These values define the non-production EAT
 // profile appraised by the mock Verifier.
@@ -82,6 +112,7 @@ const (
 
 	mockClaimPCRs          int64 = -70003
 	mockClaimFreshnessKind int64 = -70004
+	mockClaimBindingDigest int64 = -70005
 )
 
 // Credential item types carried inside an EncryptedCredentialBundle.
@@ -116,22 +147,27 @@ type AttestationCA interface {
 
 // AttestationInitiateResponse is returned by the attest-initiate resource. It
 // carries the CAAPI InitiateCredentialAcquisitionResponse fields: Mechanism
-// corresponds to mechanism, and Handle to the optional challenge.
+// corresponds to mechanism, and Handle to the optional challenge. It names no
+// RATS Relying Party: the Attester binds the identifier it holds for the
+// Target and mode, never one from the CAS (TACRA, "Binding Credential Keys to
+// Evidence").
 type AttestationInitiateResponse struct {
 	FreshnessKind      string   `json:"freshness_kind"`
-	Handle             []byte   `json:"handle,omitempty"`
+	Handle             B64URL   `json:"handle,omitempty"`
 	ExpiresIn          int      `json:"expires_in,omitempty"`
 	MaxAge             int      `json:"max_age,omitempty"`
 	AcceptableEvidence []string `json:"acceptable_evidence,omitempty"`
-	RequiredBindings   []string `json:"required_bindings,omitempty"`
+	AcceptableCSK      []string `json:"acceptable_csk,omitempty"`
 	AcceptableCEK      []string `json:"acceptable_cek,omitempty"`
 	Mechanism          string   `json:"mode,omitempty"`
 }
 
-// Binding declares the request-level CSR or CEK association method.
+// Binding declares the request-level Evidence-to-CSR or Evidence-to-CEK
+// association method. Hash names the digest algorithm when Method uses one;
+// this mock always uses SHA-512 for BindingInput.
 type Binding struct {
-	Method  string `json:"method"`
-	HashAlg string `json:"hash_alg,omitempty"`
+	Method string `json:"method"`
+	Hash   string `json:"hash,omitempty"`
 }
 
 // AttestedEnrollmentRequest is the attest-enroll request body.
@@ -139,12 +175,12 @@ type AttestedEnrollmentRequest struct {
 	Target         string  `json:"target"`
 	CredentialType string  `json:"credential_type,omitempty"`
 	FreshnessKind  string  `json:"freshness_kind"`
-	Handle         []byte  `json:"handle,omitempty"`
-	CSR            []byte  `json:"csr"`
-	Evidence       []byte  `json:"evidence"`
-	Endorsements   []byte  `json:"endorsements,omitempty"`
+	Handle         B64URL  `json:"handle,omitempty"`
+	CSR            B64URL  `json:"csr"`
+	Evidence       B64URL  `json:"evidence"`
 	Binding        Binding `json:"binding"`
 	Profile        string  `json:"profile,omitempty"`
+	CredentialHint *string `json:"credential_hint,omitempty"`
 }
 
 // AttestedRetrievalRequest is the attest-retrieve request body.
@@ -152,12 +188,12 @@ type AttestedRetrievalRequest struct {
 	Target         string  `json:"target"`
 	CredentialType string  `json:"credential_type,omitempty"`
 	FreshnessKind  string  `json:"freshness_kind"`
-	Handle         []byte  `json:"handle,omitempty"`
-	CEKPub         []byte  `json:"cek_pub"`
-	Evidence       []byte  `json:"evidence"`
-	Endorsements   []byte  `json:"endorsements,omitempty"`
+	Handle         B64URL  `json:"handle,omitempty"`
+	CEKPub         B64URL  `json:"cek_pub"`
+	Evidence       B64URL  `json:"evidence"`
 	Binding        Binding `json:"binding"`
 	Profile        string  `json:"profile,omitempty"`
+	CredentialHint *string `json:"credential_hint,omitempty"`
 }
 
 // CredentialItem is a single credential inside a decrypted bundle.
@@ -174,13 +210,17 @@ type CredentialBundle struct {
 }
 
 // EncryptedCredentialBundle is an authenticated-encryption container encrypted
-// to CEKpub. The EST server forwards it without being able to read it.
+// to CEKpub. The EST server forwards it without being able to read it. The
+// associated data authenticated by Ciphertext binds GroupID, Target, Handle
+// (when present) and CredentialHint (when present); no server identity, as the
+// EST Server is invisible to the Attester (rats-tacra#20, 6 October 2026).
 type EncryptedCredentialBundle struct {
 	GroupID            string `json:"group_id"`
 	Enc                string `json:"enc"`
 	Profile            string `json:"profile,omitempty"`
-	ServerID           string `json:"server_id,omitempty"`
+	Target             string `json:"target"`
 	Handle             []byte `json:"handle,omitempty"`
+	CredentialHint     string `json:"credential_hint,omitempty"`
 	EphemeralPublicKey []byte `json:"epk"`
 	Nonce              []byte `json:"nonce"`
 	Ciphertext         []byte `json:"ciphertext"`
@@ -203,6 +243,7 @@ type MockEATClaims struct {
 	SoftwareName  *eat.StringOrURI `cbor:"270,keyasint,omitempty"`
 	PCRs          map[int][]byte   `cbor:"-70003,keyasint"`
 	FreshnessKind string           `cbor:"-70004,keyasint"`
+	BindingDigest []byte           `cbor:"-70005,keyasint"`
 }
 
 func mockPCRs() map[int][]byte {
@@ -216,11 +257,43 @@ func mockPCRs() map[int][]byte {
 }
 
 // NewMockEvidence returns a CBOR COSE_Sign1 EAT signed by the supplied mock
-// provider key. The provider retains ownership of the private key.
-func NewMockEvidence(signer crypto.Signer, freshnessKind string, freshnessHandle []byte) ([]byte, error) {
+// provider key. The provider retains ownership of the private key. target is
+// the value the Attester intends to bind, and subject is the CSR DER
+// (enrollment) or CEKpub SubjectPublicKeyInfo DER (retrieval); both are folded
+// into the direct-form binding_input digest of {{binding-input}}.
+func NewMockEvidence(
+	signer crypto.Signer,
+	freshnessKind string,
+	freshnessHandle []byte,
+	target string,
+	subject []byte,
+) ([]byte, error) {
+	return NewMockEvidenceAt(
+		signer, freshnessKind, freshnessHandle, target, subject, time.Now(),
+	)
+}
+
+// NewMockEvidenceAt is NewMockEvidence with an explicit trusted-clock time.
+// It exists so absent-timestamp freshness and its age boundaries can be tested
+// deterministically. Production Evidence generation must obtain this value
+// from the Attester's trusted clock.
+func NewMockEvidenceAt(
+	signer crypto.Signer,
+	freshnessKind string,
+	freshnessHandle []byte,
+	target string,
+	subject []byte,
+	issuedAt time.Time,
+) ([]byte, error) {
 	ecKey, ok := signer.(*ecdsa.PrivateKey)
 	if !ok || ecKey.Curve != elliptic.P256() {
 		return nil, fmt.Errorf("mock TEE signer must be an ECDSA P-256 private key")
+	}
+	if len(subject) == 0 {
+		return nil, fmt.Errorf("subject (CSR or CEKpub DER) is required to compute the binding digest")
+	}
+	if issuedAt.IsZero() || issuedAt.Unix() <= 0 {
+		return nil, fmt.Errorf("issued-at time is required")
 	}
 
 	profile, err := eat.NewProfile(MockEATProfileURI)
@@ -233,13 +306,16 @@ func NewMockEvidence(signer crypto.Signer, freshnessKind string, freshnessHandle
 	}
 	nonce := eat.Nonce{}
 	switch freshnessKind {
-	case FreshnessPresentNonce:
+	case FreshnessPresentNonce, FreshnessPresentEpoch, FreshnessAbsentEpoch:
+		if len(freshnessHandle) == 0 {
+			return nil, fmt.Errorf("freshness handle is required for %s", freshnessKind)
+		}
 		if err := nonce.Add(freshnessHandle); err != nil {
 			return nil, fmt.Errorf("create mock EAT nonce: %w", err)
 		}
-	case FreshnessAbsentNone:
+	case FreshnessAbsentTimestamp, FreshnessAbsentNone:
 		if len(freshnessHandle) != 0 {
-			return nil, fmt.Errorf("freshness handle must be absent for absent-none")
+			return nil, fmt.Errorf("freshness handle must be absent for %s", freshnessKind)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported freshness kind %q", freshnessKind)
@@ -253,7 +329,7 @@ func NewMockEvidence(signer crypto.Signer, freshnessKind string, freshnessHandle
 	claims := MockEATClaims{
 		Issuer:        MockTEEProviderID,
 		Subject:       "twi-poc-workload",
-		IssuedAt:      time.Now().Unix(),
+		IssuedAt:      issuedAt.Unix(),
 		UEID:          ueid,
 		HardwareModel: []byte(MockTEEType),
 		OemBoot:       &oemBoot,
@@ -264,8 +340,11 @@ func NewMockEvidence(signer crypto.Signer, freshnessKind string, freshnessHandle
 		SoftwareName:  &software,
 		PCRs:          mockPCRs(),
 		FreshnessKind: freshnessKind,
+		BindingDigest: BindingDigest(freshnessHandle, target, subject),
 	}
-	if freshnessKind == FreshnessPresentNonce {
+	if freshnessKind == FreshnessPresentNonce ||
+		freshnessKind == FreshnessPresentEpoch ||
+		freshnessKind == FreshnessAbsentEpoch {
 		claims.Nonce = &nonce
 	}
 	payload, err := cbor.Marshal(claims)
@@ -374,15 +453,42 @@ func CEKThumbprint(cekPub []byte) []byte {
 	return sum[:]
 }
 
+// EncodeBindingInput returns the canonical octet string of the mock's binding
+// input: length-prefixed handle, target and subject, where each length is a
+// 32-bit big-endian octet count (no server identity since 6 October 2026,
+// rats-tacra#20; the TACRA backend keeps Section 4.5's own layout). handle is
+// empty for absent-none/absent-timestamp; subject is the CSR DER for
+// enrollment or the CEKpub SubjectPublicKeyInfo DER for retrieval. The length
+// prefixes make the concatenation unambiguous.
+func EncodeBindingInput(handle []byte, target string, subject []byte) []byte {
+	var buf bytes.Buffer
+	for _, part := range [][]byte{handle, []byte(target), subject} {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(part)))
+		buf.Write(length[:])
+		buf.Write(part)
+	}
+	return buf.Bytes()
+}
+
+// BindingDigest returns the SHA-512 digest of EncodeBindingInput, matching the
+// direct platform form for a 64-octet report-data field (e.g. AMD SEV-SNP
+// REPORT_DATA or Intel TDX REPORTDATA).
+func BindingDigest(handle []byte, target string, subject []byte) []byte {
+	sum := sha512.Sum512(EncodeBindingInput(handle, target, subject))
+	return sum[:]
+}
+
 // bundleAAD builds the associated data binding the ciphertext to the group ID,
-// Handle, profile and server identity.
-func bundleAAD(groupID string, handle []byte, profile, serverID string) []byte {
+// Target, Handle and Credential Hint, the draft's encrypted-credential-bundle
+// aad structure without a server identity (rats-tacra#20, 6 October 2026).
+func bundleAAD(groupID, target string, handle []byte, credentialHint string) []byte {
 	aad, _ := json.Marshal(struct {
-		GroupID  string `json:"group_id"`
-		Handle   []byte `json:"handle,omitempty"`
-		Profile  string `json:"profile,omitempty"`
-		ServerID string `json:"server_id,omitempty"`
-	}{groupID, handle, profile, serverID})
+		GroupID        string `json:"group_id"`
+		Target         string `json:"target"`
+		Handle         []byte `json:"handle,omitempty"`
+		CredentialHint string `json:"credential_hint,omitempty"`
+	}{groupID, target, handle, credentialHint})
 
 	return aad
 }
@@ -393,7 +499,7 @@ func SealCredentialBundle(
 	bundle *CredentialBundle,
 	cekPub []byte,
 	handle []byte,
-	profile, serverID string,
+	profile, target, credentialHint string,
 ) (*EncryptedCredentialBundle, error) {
 	pub, err := ecdh.P256().NewPublicKey(cekPub)
 	if err != nil {
@@ -415,7 +521,7 @@ func SealCredentialBundle(
 		return nil, fmt.Errorf("failed to marshal credential bundle: %w", err)
 	}
 
-	aad := bundleAAD(bundle.GroupID, handle, profile, serverID)
+	aad := bundleAAD(bundle.GroupID, target, handle, credentialHint)
 
 	key, err := hkdf.Key(sha256.New, shared, eph.PublicKey().Bytes(), string(aad), 32)
 	if err != nil {
@@ -441,8 +547,9 @@ func SealCredentialBundle(
 		GroupID:            bundle.GroupID,
 		Enc:                EncECDHP256,
 		Profile:            profile,
-		ServerID:           serverID,
+		Target:             target,
 		Handle:             handle,
+		CredentialHint:     credentialHint,
 		EphemeralPublicKey: eph.PublicKey().Bytes(),
 		Nonce:              nonce,
 		Ciphertext:         aead.Seal(nil, nonce, plaintext, aad),
@@ -467,7 +574,7 @@ func (b *EncryptedCredentialBundle) Open(cekPriv *ecdh.PrivateKey) (*CredentialB
 		return nil, fmt.Errorf("failed to compute shared secret: %w", err)
 	}
 
-	aad := bundleAAD(b.GroupID, b.Handle, b.Profile, b.ServerID)
+	aad := bundleAAD(b.GroupID, b.Target, b.Handle, b.CredentialHint)
 
 	key, err := hkdf.Key(sha256.New, shared, b.EphemeralPublicKey, string(aad), 32)
 	if err != nil {
@@ -504,20 +611,9 @@ func attestationCAFromContext(ctx context.Context) AttestationCA {
 	return aca
 }
 
-// decodeJSONRequest decodes a JSON request body, rejecting unknown fields.
-func decodeJSONRequest(r *http.Request, v interface{}) error {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(v); err != nil {
-		return errInvalidJSON
-	}
-
-	return nil
-}
-
-// writeJSONResponse marshals and writes a JSON response body.
-func writeJSONResponse(ctx context.Context, w http.ResponseWriter, v interface{}) {
+// writeJSONResponse marshals and writes a JSON response body of the given media
+// type.
+func writeJSONResponse(ctx context.Context, w http.ResponseWriter, contentType string, v interface{}) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		LoggerFromContext(ctx).Errorf("failed to marshal JSON response: %v", err)
@@ -525,7 +621,7 @@ func writeJSONResponse(ctx context.Context, w http.ResponseWriter, v interface{}
 		return
 	}
 
-	writeResponse(w, mimeTypeJSON, false, body)
+	writeResponse(w, contentType, false, body)
 }
 
 // attestInitiate services the /attest-initiate endpoint.
@@ -550,7 +646,7 @@ func attestInitiate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSONResponse(ctx, w, resp)
+	writeJSONResponse(ctx, w, mimeTypeAttestInitiate, resp)
 }
 
 // attestEnroll services the /attest-enroll endpoint.
@@ -565,7 +661,7 @@ func attestEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req AttestedEnrollmentRequest
-	if err := decodeJSONRequest(r, &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
+	if err := decodeAttestedRequest(r, "csr", &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
 		return
 	}
 
@@ -589,7 +685,17 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req AttestedRetrievalRequest
-	if err := decodeJSONRequest(r, &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
+	if err := decodeAttestedRequest(r, "cek_pub", &req); writeOnError(ctx, w, logMsgReadBodyFailed, err) {
+		return
+	}
+
+	// A CA that forwards a container produced by its Secret Vault returns it as it is.
+	if raw, ok := aca.(RawRetriever); ok {
+		body, err := raw.RetrieveCredentialRaw(ctx, &req, aps, r)
+		if writeOnError(ctx, w, logMsgAttestRetrieveFailed, err) {
+			return
+		}
+		writeResponse(w, mimeTypeAttestBundle, false, body)
 		return
 	}
 
@@ -598,5 +704,13 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSONResponse(ctx, w, bundle)
+	writeJSONResponse(ctx, w, mimeTypeAttestBundle, bundle)
+}
+
+// RawRetriever is implemented by an AttestationCA whose Secret Vault produces the
+// EncryptedCredentialBundle itself (for example the hpke-auth container of the
+// revised EST profile): the EST server returns that container unchanged, as a
+// conduit, instead of re-encoding it as the mock's container type.
+type RawRetriever interface {
+	RetrieveCredentialRaw(ctx context.Context, req *AttestedRetrievalRequest, aps string, r *http.Request) ([]byte, error)
 }

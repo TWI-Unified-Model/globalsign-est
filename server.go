@@ -22,6 +22,8 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -30,8 +32,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi"
-	"github.com/go-chi/chi/middleware"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"go.mozilla.org/pkcs7"
 	"golang.org/x/time/rate"
 )
@@ -63,6 +65,16 @@ type ServerConfig struct {
 	// is nil, then HTTP Basic Authentication is not required for any EST
 	// operation, but access to the /healthcheck endpoint will be blocked.
 	CheckBasicAuth func(ctx context.Context, r *http.Request, aps, username, password string) error
+
+	// WireLog is an optional writer that receives one JSON object per line for
+	// every exchange on an attest-* resource: the request (method, path, query,
+	// Content-Type and body) and the response (status, Content-Type and body),
+	// as they crossed the wire. Nothing in them is secret from the EST server,
+	// which TACRA treats as a conduit: Evidence, CSRs, CEKpub, Freshness
+	// Handles, certificates, and credential bundles encrypted to CEKpub.
+	// Headers other than Content-Type, Authorization among them, are not
+	// recorded.
+	WireLog io.Writer
 }
 
 // ctxKey is an unexported custom type for request context keys.
@@ -154,6 +166,9 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 		r.Use(verifyAllowedHosts(cfg.AllowedHosts))
 	}
 	r.Use(maxBodySize(65536))
+	if cfg.WireLog != nil {
+		r.Use(withWireLog(cfg.WireLog))
+	}
 	if cfg.RateLimit != 0 {
 		r.Use(rateLimit(cfg.RateLimit))
 	}
@@ -200,13 +215,13 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 		r.Get(attestInitiateEndpoint, attestInitiate)
 
 		r.With(
-			requireContentType(mimeTypeJSON),
+			requireMediaType(mimeTypeAttestEnroll),
 		).With(
 			requireBasicAuth(cfg.CheckBasicAuth, true),
 		).Post(attestEnrollEndpoint, attestEnroll)
 
 		r.With(
-			requireContentType(mimeTypeJSON),
+			requireMediaType(mimeTypeAttestRetrieve),
 		).With(
 			requireBasicAuth(cfg.CheckBasicAuth, true),
 		).Post(attestRetrieveEndpoint, attestRetrieve)
@@ -245,13 +260,13 @@ func NewRouter(cfg *ServerConfig) (http.Handler, error) {
 			r.Get(attestInitiateEndpoint, attestInitiate)
 
 			r.With(
-				requireContentType(mimeTypeJSON),
+				requireMediaType(mimeTypeAttestEnroll),
 			).With(
 				requireBasicAuth(cfg.CheckBasicAuth, true),
 			).Post(attestEnrollEndpoint, attestEnroll)
 
 			r.With(
-				requireContentType(mimeTypeJSON),
+				requireMediaType(mimeTypeAttestRetrieve),
 			).With(
 				requireBasicAuth(cfg.CheckBasicAuth, true),
 			).Post(attestRetrieveEndpoint, attestRetrieve)
@@ -627,6 +642,27 @@ func requireContentType(t string) func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := verifyRequestType(r.Header.Get(contentTypeHeader), t); err != nil {
 				writeOnError(r.Context(), w, logMsgContentTypeInvalid, err)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireMediaType is middleware which rejects with 415 a request whose media
+// type is not t: the type and subtype compared without regard to case (RFC
+// 9110, Section 8.3.1), parameters not considered. The 415 names t in an
+// Accept header (RFC 9110, Section 15.5.16). Unlike requireContentType, it
+// takes no other type that begins with t.
+func requireMediaType(t string) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if mediaType, _, err := mime.ParseMediaType(r.Header.Get(contentTypeHeader)); err != nil || mediaType != t {
+				w.Header().Set(acceptHeader, t)
+				writeOnError(r.Context(), w, logMsgContentTypeInvalid, &estError{
+					status: http.StatusUnsupportedMediaType,
+					desc:   fmt.Sprintf("%s must be %s", contentTypeHeader, t),
+				})
 				return
 			}
 			next.ServeHTTP(w, r)

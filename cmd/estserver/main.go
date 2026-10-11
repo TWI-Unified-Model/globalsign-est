@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -40,6 +41,7 @@ import (
 	"github.com/globalsign/est"
 	"github.com/globalsign/est/internal/basiclogger"
 	"github.com/globalsign/est/internal/mockca"
+	"github.com/globalsign/est/internal/tacra"
 	"github.com/globalsign/pemfile"
 )
 
@@ -131,6 +133,18 @@ func main() {
 		defer f.Close()
 	}
 
+	// The optional wire log: every exchange on an attest-* resource, request and
+	// response, as it crossed the wire (est.ServerConfig.WireLog).
+	var wireLog io.Writer
+	if cfg.WireLog != "" {
+		f, err := os.OpenFile(cfg.WireLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			log.Fatalf("failed to open the wire log: %v", err)
+		}
+		wireLog = f
+		defer f.Close()
+	}
+
 	// Create server TLS configuration. If a server TLS configuration was
 	// specified in the configuration file, use it. Otherwise, generate a
 	// transient server key and enroll for a server certificate with the
@@ -211,8 +225,14 @@ func main() {
 		clientCAs.AddCert(cert)
 	}
 
+	minTLS := uint16(tls.VersionTLS12)
+	if cfg.Tacra != nil {
+		// the bank profile's CAS channel: TLS 1.3, as the reference implementation's EST server (tacra-est
+		// BANK-PROFILE, "TLS between the CAS client and server")
+		minTLS = tls.VersionTLS13
+	}
 	tlsCfg := &tls.Config{
-		MinVersion:       tls.VersionTLS12,
+		MinVersion:       minTLS,
 		CurvePreferences: []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
 		ClientAuth:       tls.VerifyClientCertIfGiven,
 		Certificates: []tls.Certificate{
@@ -242,9 +262,16 @@ func main() {
 		return nil
 	}
 
-	// Wrap the mock CA with mock attested credential acquisition support.
+	// Wrap the mock CA with mock attested credential acquisition support, or
+	// use the backend that forwards to a deployed Verifier and RRPs.
 	var serverCA est.CA = ca
-	if cfg.Attest != nil {
+	if cfg.Tacra != nil {
+		backend, err := tacra.New(*cfg.Tacra)
+		if err != nil {
+			log.Fatalf("failed to configure the TACRA backend: %v", err)
+		}
+		serverCA = backend
+	} else if cfg.Attest != nil {
 		trustedProviderKey, err := loadProviderPublicKey(cfg.Attest.TrustedProviderPublicKey)
 		if err != nil {
 			log.Fatalf("failed to load attestation trust anchor: %v", err)
@@ -256,6 +283,7 @@ func main() {
 	r, err := est.NewRouter(&est.ServerConfig{
 		CA:             serverCA,
 		Logger:         logger,
+		WireLog:        wireLog,
 		AllowedHosts:   cfg.AllowedHosts,
 		Timeout:        time.Duration(cfg.Timeout) * time.Second,
 		RateLimit:      cfg.RateLimit,
