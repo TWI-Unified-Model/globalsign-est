@@ -68,28 +68,8 @@ func decodeStrict(raw []byte, v any) error {
 	return d.Decode(v)
 }
 
-// withoutRRPID is an attest-initiate response of the reference implementation without its rrp_id, which the wire no
-// longer carries: the Attester binds the identifier it holds for the Target and mode, never one from the CAS.
-func withoutRRPID(t *testing.T, raw []byte) []byte {
-	t.Helper()
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := m["rrp_id"]; !ok {
-		t.Fatalf("the reference response has no rrp_id: %s", raw)
-	}
-	delete(m, "rrp_id")
-	out, err := json.Marshal(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
-
-// TestRefEnvelopesRoundTrip: each message of the reference implementation decodes into this package's types with
-// no member unknown, and encodes back to the same JSON, member for member; its attest-initiate responses once rrp_id,
-// which they still carry, is taken out.
+// TestRefEnvelopesRoundTrip: each message of the reference vectors decodes into this package's types with no member
+// unknown, and encodes back to the same JSON, member for member.
 func TestRefEnvelopesRoundTrip(t *testing.T) {
 	v := loadRefVectors(t)
 	for name, c := range map[string]struct {
@@ -98,8 +78,8 @@ func TestRefEnvelopesRoundTrip(t *testing.T) {
 	}{
 		"AttestedEnrollmentRequest":                {v.Enrollment.Request, &est.AttestedEnrollmentRequest{}},
 		"AttestedRetrievalRequest":                 {v.Retrieval.Request, &est.AttestedRetrievalRequest{}},
-		"AttestationInitiationResponse (enroll)":   {withoutRRPID(t, v.Enrollment.Initiation), &est.AttestationInitiateResponse{}},
-		"AttestationInitiationResponse (retrieve)": {withoutRRPID(t, v.Retrieval.Initiation), &est.AttestationInitiateResponse{}},
+		"AttestationInitiationResponse (enroll)":   {v.Enrollment.Initiation, &est.AttestationInitiateResponse{}},
+		"AttestationInitiationResponse (retrieve)": {v.Retrieval.Initiation, &est.AttestationInitiateResponse{}},
 	} {
 		if err := decodeStrict(c.raw, c.v); err != nil {
 			t.Errorf("%s: %v", name, err)

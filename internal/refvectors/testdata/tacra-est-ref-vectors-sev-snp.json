@@ -13,8 +13,7 @@
    "expires_in": 300,
    "freshness_kind": "present-nonce",
    "handle": "v36UAanmwiEPKJA2JFwq2BEt7jPjthsdORe_nXmXH2k",
-   "mode": "enroll",
-   "rrp_id": "https://ca1.tacra.example"
+   "mode": "enroll"
   },
   "AttestedEnrollmentRequest": {
    "binding": {
@@ -48,8 +47,7 @@
    ],
    "freshness_kind": "absent-timestamp",
    "max_age": 60,
-   "mode": "enroll",
-   "rrp_id": "https://ca1.tacra.example"
+   "mode": "enroll"
   },
   "AttestedEnrollmentRequest": {
    "binding": {
@@ -83,8 +81,7 @@
    "expires_in": 300,
    "freshness_kind": "present-nonce",
    "handle": "JN2LZtcDCgP1EVPP-91X82FHkH84SKAwb-br8M-S8jM",
-   "mode": "retrieve",
-   "rrp_id": "https://vault1.tacra.example"
+   "mode": "retrieve"
   },
   "AttestedRetrievalRequest": {
    "binding": {
@@ -105,7 +102,6 @@
     "credential_hint": "workload.tacra.example",
     "group_id": "663a1ffc68869632ea902088ba2ca3bba7e5a999c3058894b409c79348680ffc",
     "handle": "JN2LZtcDCgP1EVPP-91X82FHkH84SKAwb-br8M-S8jM",
-    "rrp_id": "https://vault1.tacra.example",
     "target": "https://ledger.tacra.example"
    },
    "ciphertext": "xZTZ-9jvKh4BINE9Q3nPWBQt5rnocJSn-W8zftClIzHOSZglmF2m6J772r9HWZXpklER7MiUq1fsoF6i2CNhENRkjB-Wris0EW-IqMieyz9Wv4Apnh4Gvfqa26BNUpB56l6k11dtAbbFA4JFEYIrxe34ulZn0JDN5Dk0_nzQkYxMb0_ZYeM_ckRzsEy4Xj7tnrYcYY4xk3jaj7f74IsxEgIvkBK1N1p5LbawCnJUKHDLqBJBV2QZQ0qaEOGAJJ7Vbd0VLUYlAyjAw97tvndwKBnI_SGu-LMuF3s1KpxNXJ3h0r3fcZ3WvG_iO4UNayJ2RktHS9KuAylSpkRoPKZqCvIc4-Q-N-YbFt3gCdnmP0MjrQQLO6f1zTE3-TWb1IBsmXCdqsHBHHt_DcRNgXcsHP-4ETMYIjFKtYWtqoESHD6F0VVXik8tMV59t5WLcfla-cAPfLttHg",
