@@ -391,14 +391,30 @@ func (ca *AttestedCA) verifyEvidence(
 		}
 
 	case est.FreshnessAbsentTimestamp:
-		if len(handle) != 0 || claims.Nonce != nil {
+		// The handle is the Attester's timestamp element, which the Evidence
+		// binds and whose instant its issued-at claim repeats; the age is
+		// judged by this Verifier's clock.
+		if claims.Nonce != nil {
 			return nil, caError{
 				status: http.StatusBadRequest,
-				desc:   "handle must be absent for absent-timestamp freshness",
+				desc:   "a nonce claim with absent-timestamp freshness",
+			}
+		}
+		stamped, err := est.TimestampFromElement(handle)
+		if err != nil {
+			return nil, caError{
+				status: http.StatusBadRequest,
+				desc:   fmt.Sprintf("handle must be the timestamp element for absent-timestamp freshness: %v", err),
+			}
+		}
+		issuedAt := time.Unix(claims.IssuedAt, 0)
+		if !stamped.Equal(issuedAt) {
+			return nil, caError{
+				status: http.StatusForbidden,
+				desc:   "attestation failed: evidence not bound to its timestamp",
 			}
 		}
 		now := time.Now()
-		issuedAt := time.Unix(claims.IssuedAt, 0)
 		if issuedAt.After(now.Add(trustedClockSkew)) {
 			return nil, caError{
 				status: http.StatusForbidden,
