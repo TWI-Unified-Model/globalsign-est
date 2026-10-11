@@ -25,7 +25,6 @@
       "ca": {
         "url": "https://ca-gateway:9101",
         "ca": "/etc/est/certs/ca-gateway-ca.pem",
-        "rrp_id": "https://ca1.tacra.example",
         "mode": "enroll",
         "rats_model": "passport",
         "verifiers": ["veraison"]
@@ -33,7 +32,6 @@
       "vault": {
         "url": "https://vault-gateway:9102",
         "ca": "/etc/est/certs/vault-gateway-ca.pem",
-        "rrp_id": "https://vault1.tacra.example",
         "mode": "retrieve",
         "rats_model": "background-check"
       }

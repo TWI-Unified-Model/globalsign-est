@@ -69,7 +69,7 @@ func TestUnreachable(t *testing.T) {
 	const target = "https://db-none.tacra.example"
 	b, err := New(Config{
 		Verifiers: map[string]Verifier{"veraison": {URL: "https://" + closedPort(t), CA: ca, Provider: "sev_guest"}},
-		RRPs: map[string]RRP{"ca": {URL: "https://" + closedPort(t), CA: ca, RRPID: "https://ca1.tacra.example",
+		RRPs: map[string]RRP{"ca": {URL: "https://" + closedPort(t), CA: ca,
 			Mode: est.MechanismEnroll, Verifiers: []string{"veraison"}}},
 		Targets:            map[string]string{target: "ca"},
 		AcceptableEvidence: []string{"application/vnd.veraison.tsm-report+cbor"},

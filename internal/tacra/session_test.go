@@ -82,7 +82,7 @@ func TestExpiredOrUnknown(t *testing.T) {
 func TestFormatRefusalLeavesTheHandle(t *testing.T) {
 	const target = "https://db-nonce.tacra.example"
 	b := &Backend{sessions: map[string][]session{},
-		cfg: Config{RRPs: map[string]RRP{"ca": {RRPID: "https://ca1.tacra.example", Mode: est.MechanismEnroll}},
+		cfg: Config{RRPs: map[string]RRP{"ca": {Mode: est.MechanismEnroll}},
 			Targets: map[string]string{target: "ca"}, AcceptableEvidence: []string{"application/vnd.veraison.tsm-report+cbor"}}}
 	handle := []byte("a present-nonce Handle of 32 o.")
 	b.remember(hex.EncodeToString(handle), session{target, "x509", "ca", est.FreshnessPresentNonce, time.Now().Add(time.Minute)})

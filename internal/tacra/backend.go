@@ -60,13 +60,9 @@ type Verifier struct {
 
 // RRP is a Credential Authority or Secret Vault gateway.
 type RRP struct {
-	URL string `json:"url"`
-	CA  string `json:"ca"` // CA of its TLS certificate
-	// RRPID is the identifier the RRP reports at attest-initiate, which this server checks. It is not bound into the
-	// Evidence: the group decided on 6 October 2026 to leave the RRP identifier out (TheBankster/rats-tacra#20) until
-	// the threat model is agreed, so the binding value carries an empty identifier field (bindingValue).
-	RRPID string `json:"rrp_id"`
-	Mode  string `json:"mode"` // "enroll" or "retrieve"
+	URL  string `json:"url"`
+	CA   string `json:"ca"`   // CA of its TLS certificate
+	Mode string `json:"mode"` // "enroll" or "retrieve"
 	// RATSModel: "passport" (the default), this server obtains the Attestation Results; "background-check", the
 	// RRP does, from the Evidence this server forwards
 	RATSModel string `json:"rats_model,omitempty"`
@@ -261,12 +257,11 @@ func (b *Backend) route(target string) (string, RRP, error) {
 	return name, b.cfg.RRPs[name], nil
 }
 
-// gatewayInitiation is an RRP gateway's answer to attest-initiate. RRPID is checked against this server's
-// configuration and goes no further: the Attester binds the identifier it holds itself.
+// gatewayInitiation is an RRP gateway's answer to attest-initiate. No identifier of the RRP is in it, or anywhere in
+// this server, since 11 October 2026 (TheBankster/rats-tacra#20).
 type gatewayInitiation struct {
 	FreshnessKind string   `json:"freshness_kind"`
 	Handle        string   `json:"handle"`
-	RRPID         string   `json:"rrp_id"`
 	ExpiresIn     int      `json:"expires_in"`
 	MaxAge        int      `json:"max_age"`
 	Mode          string   `json:"mode"`
@@ -284,8 +279,8 @@ func (b *Backend) InitiateRemoteAttestation(ctx context.Context, target, credent
 	if _, err := b.post(ctx, name, "/tacra/v1/initiate", map[string]string{"target": target, "credential_type": credentialType}, &g); err != nil {
 		return nil, err
 	}
-	if g.RRPID != rrp.RRPID || g.Mode != rrp.Mode {
-		return nil, fail(http.StatusBadGateway, "RRP %s answered as %s/%s, configured as %s/%s", name, g.RRPID, g.Mode, rrp.RRPID, rrp.Mode)
+	if g.Mode != rrp.Mode {
+		return nil, fail(http.StatusBadGateway, "RRP %s answered for %s, configured for %s", name, g.Mode, rrp.Mode)
 	}
 	resp, err := initiation(g, b.cfg.AcceptableEvidence)
 	if err != nil {

@@ -104,7 +104,7 @@ func TestNewTakesTheDrillInPassportAlone(t *testing.T) {
 	cfg := func(attack, model string) Config {
 		return Config{
 			Verifiers: map[string]Verifier{"veraison": {URL: "https://" + closedPort(t), CA: ca, Provider: "sev_guest"}},
-			RRPs: map[string]RRP{"ca": {URL: "https://" + closedPort(t), CA: ca, RRPID: "https://ca1.tacra.example",
+			RRPs: map[string]RRP{"ca": {URL: "https://" + closedPort(t), CA: ca,
 				Mode: est.MechanismEnroll, Verifiers: []string{"veraison"}, RATSModel: model, ConduitAttack: attack}},
 			Targets:            map[string]string{"https://db-none.tacra.example": "ca"},
 			AcceptableEvidence: []string{"application/vnd.veraison.tsm-report+cbor"},
