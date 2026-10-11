@@ -81,7 +81,7 @@ const (
 
 	// BindingCSRHash identifies the enrollment request's CSR hash association.
 	// Retained for documentation only: it binds Evidence to the CSR but not
-	// to server_id or Target, so this mock no longer accepts it alone.
+	// to the Target, so this mock no longer accepts it alone.
 	BindingCSRHash = "csr-hash"
 
 	// BindingCEKThumbprint identifies the retrieval request's CEK association.
@@ -211,13 +211,13 @@ type CredentialBundle struct {
 
 // EncryptedCredentialBundle is an authenticated-encryption container encrypted
 // to CEKpub. The EST server forwards it without being able to read it. The
-// associated data authenticated by Ciphertext binds GroupID, ServerID, Target,
-// Handle (when present) and CredentialHint (when present).
+// associated data authenticated by Ciphertext binds GroupID, Target, Handle
+// (when present) and CredentialHint (when present); no server identity, as the
+// EST Server is invisible to the Attester (rats-tacra#20, 6 October 2026).
 type EncryptedCredentialBundle struct {
 	GroupID            string `json:"group_id"`
 	Enc                string `json:"enc"`
 	Profile            string `json:"profile,omitempty"`
-	ServerID           string `json:"server_id"`
 	Target             string `json:"target"`
 	Handle             []byte `json:"handle,omitempty"`
 	CredentialHint     string `json:"credential_hint,omitempty"`
@@ -257,19 +257,19 @@ func mockPCRs() map[int][]byte {
 }
 
 // NewMockEvidence returns a CBOR COSE_Sign1 EAT signed by the supplied mock
-// provider key. The provider retains ownership of the private key. serverID
-// and target are the values the Attester intends to bind, and subject is the
-// CSR DER (enrollment) or CEKpub SubjectPublicKeyInfo DER (retrieval); all
-// three are folded into the direct-form binding_input digest of {{binding-input}}.
+// provider key. The provider retains ownership of the private key. target is
+// the value the Attester intends to bind, and subject is the CSR DER
+// (enrollment) or CEKpub SubjectPublicKeyInfo DER (retrieval); both are folded
+// into the direct-form binding_input digest of {{binding-input}}.
 func NewMockEvidence(
 	signer crypto.Signer,
 	freshnessKind string,
 	freshnessHandle []byte,
-	serverID, target string,
+	target string,
 	subject []byte,
 ) ([]byte, error) {
 	return NewMockEvidenceAt(
-		signer, freshnessKind, freshnessHandle, serverID, target, subject, time.Now(),
+		signer, freshnessKind, freshnessHandle, target, subject, time.Now(),
 	)
 }
 
@@ -281,7 +281,7 @@ func NewMockEvidenceAt(
 	signer crypto.Signer,
 	freshnessKind string,
 	freshnessHandle []byte,
-	serverID, target string,
+	target string,
 	subject []byte,
 	issuedAt time.Time,
 ) ([]byte, error) {
@@ -340,7 +340,7 @@ func NewMockEvidenceAt(
 		SoftwareName:  &software,
 		PCRs:          mockPCRs(),
 		FreshnessKind: freshnessKind,
-		BindingDigest: BindingDigest(freshnessHandle, serverID, target, subject),
+		BindingDigest: BindingDigest(freshnessHandle, target, subject),
 	}
 	if freshnessKind == FreshnessPresentNonce ||
 		freshnessKind == FreshnessPresentEpoch ||
@@ -453,15 +453,16 @@ func CEKThumbprint(cekPub []byte) []byte {
 	return sum[:]
 }
 
-// EncodeBindingInput returns the canonical octet string of the updated TACRA
-// EST draft's {{binding-input}}: length-prefixed handle, server_id, target and
-// subject, where each length is a 32-bit big-endian octet count. handle is
+// EncodeBindingInput returns the canonical octet string of the mock's binding
+// input: length-prefixed handle, target and subject, where each length is a
+// 32-bit big-endian octet count (no server identity since 6 October 2026,
+// rats-tacra#20; the TACRA backend keeps Section 4.5's own layout). handle is
 // empty for absent-none/absent-timestamp; subject is the CSR DER for
 // enrollment or the CEKpub SubjectPublicKeyInfo DER for retrieval. The length
 // prefixes make the concatenation unambiguous.
-func EncodeBindingInput(handle []byte, serverID, target string, subject []byte) []byte {
+func EncodeBindingInput(handle []byte, target string, subject []byte) []byte {
 	var buf bytes.Buffer
-	for _, part := range [][]byte{handle, []byte(serverID), []byte(target), subject} {
+	for _, part := range [][]byte{handle, []byte(target), subject} {
 		var length [4]byte
 		binary.BigEndian.PutUint32(length[:], uint32(len(part)))
 		buf.Write(length[:])
@@ -473,22 +474,21 @@ func EncodeBindingInput(handle []byte, serverID, target string, subject []byte) 
 // BindingDigest returns the SHA-512 digest of EncodeBindingInput, matching the
 // direct platform form for a 64-octet report-data field (e.g. AMD SEV-SNP
 // REPORT_DATA or Intel TDX REPORTDATA).
-func BindingDigest(handle []byte, serverID, target string, subject []byte) []byte {
-	sum := sha512.Sum512(EncodeBindingInput(handle, serverID, target, subject))
+func BindingDigest(handle []byte, target string, subject []byte) []byte {
+	sum := sha512.Sum512(EncodeBindingInput(handle, target, subject))
 	return sum[:]
 }
 
 // bundleAAD builds the associated data binding the ciphertext to the group ID,
-// server identity, Target, Handle and Credential Hint, matching the draft's
-// encrypted-credential-bundle aad structure.
-func bundleAAD(groupID, serverID, target string, handle []byte, credentialHint string) []byte {
+// Target, Handle and Credential Hint, the draft's encrypted-credential-bundle
+// aad structure without a server identity (rats-tacra#20, 6 October 2026).
+func bundleAAD(groupID, target string, handle []byte, credentialHint string) []byte {
 	aad, _ := json.Marshal(struct {
 		GroupID        string `json:"group_id"`
-		ServerID       string `json:"server_id"`
 		Target         string `json:"target"`
 		Handle         []byte `json:"handle,omitempty"`
 		CredentialHint string `json:"credential_hint,omitempty"`
-	}{groupID, serverID, target, handle, credentialHint})
+	}{groupID, target, handle, credentialHint})
 
 	return aad
 }
@@ -499,7 +499,7 @@ func SealCredentialBundle(
 	bundle *CredentialBundle,
 	cekPub []byte,
 	handle []byte,
-	profile, serverID, target, credentialHint string,
+	profile, target, credentialHint string,
 ) (*EncryptedCredentialBundle, error) {
 	pub, err := ecdh.P256().NewPublicKey(cekPub)
 	if err != nil {
@@ -521,7 +521,7 @@ func SealCredentialBundle(
 		return nil, fmt.Errorf("failed to marshal credential bundle: %w", err)
 	}
 
-	aad := bundleAAD(bundle.GroupID, serverID, target, handle, credentialHint)
+	aad := bundleAAD(bundle.GroupID, target, handle, credentialHint)
 
 	key, err := hkdf.Key(sha256.New, shared, eph.PublicKey().Bytes(), string(aad), 32)
 	if err != nil {
@@ -547,7 +547,6 @@ func SealCredentialBundle(
 		GroupID:            bundle.GroupID,
 		Enc:                EncECDHP256,
 		Profile:            profile,
-		ServerID:           serverID,
 		Target:             target,
 		Handle:             handle,
 		CredentialHint:     credentialHint,
@@ -575,7 +574,7 @@ func (b *EncryptedCredentialBundle) Open(cekPriv *ecdh.PrivateKey) (*CredentialB
 		return nil, fmt.Errorf("failed to compute shared secret: %w", err)
 	}
 
-	aad := bundleAAD(b.GroupID, b.ServerID, b.Target, b.Handle, b.CredentialHint)
+	aad := bundleAAD(b.GroupID, b.Target, b.Handle, b.CredentialHint)
 
 	key, err := hkdf.Key(sha256.New, shared, b.EphemeralPublicKey, string(aad), 32)
 	if err != nil {

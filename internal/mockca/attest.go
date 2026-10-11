@@ -47,7 +47,6 @@ const (
 	DefaultRetrieveTarget = "RUP-workload-2"
 
 	attestPolicyVersion = "poc-policy-v1"
-	attestServerID      = "twi-globalsign-est"
 	nonceLifetime       = time.Second * 300
 	nonceSize           = 32
 	defaultTimestampAge = 300
@@ -327,7 +326,7 @@ type attestationResults struct {
 
 // verifyEvidence mocks the RATS Verifier. It validates the provider signature,
 // PCR policy, binding to the Freshness from attest-initiate, and the direct-
-// form binding_input digest ({{binding-input}}) covering server_id, Target and
+// form binding_input digest ({{binding-input}}) covering the Target and the
 // subject (CSR or CEKpub), then returns Attestation Results.
 func (ca *AttestedCA) verifyEvidence(
 	target, credentialType, freshnessKind string,
@@ -428,9 +427,9 @@ func (ca *AttestedCA) verifyEvidence(
 		}
 	}
 
-	// Evidence-to-Server, Evidence-to-Target and Evidence-to-CSR/CEK binding,
-	// recomputed with this CAS's own server_id rather than trusting the request.
-	expectedDigest := est.BindingDigest(handle, attestServerID, target, subject)
+	// Evidence-to-Target and Evidence-to-CSR/CEK binding, recomputed here rather
+	// than trusting the request; no server identity (rats-tacra#20, 6 October 2026).
+	expectedDigest := est.BindingDigest(handle, target, subject)
 	if !bytes.Equal(claims.BindingDigest, expectedDigest) {
 		return nil, caError{
 			status: http.StatusForbidden,
@@ -630,7 +629,7 @@ func (ca *AttestedCA) RetrieveCredential(
 	}
 
 	sealed, err := est.SealCredentialBundle(
-		bundle, req.CEKPub, req.Handle, req.Profile, attestServerID, req.Target, credentialHint,
+		bundle, req.CEKPub, req.Handle, req.Profile, req.Target, credentialHint,
 	)
 	if err != nil {
 		return nil, caError{

@@ -8,35 +8,38 @@ import (
 	"github.com/globalsign/est"
 )
 
-// The test vector of draft-novak-lamps-tacra-est, Appendix A (pull request head 183bedd): the enrollment of the
-// SEV-SNP run 20260930T172002Z, whose SHA-512(binding_input) equals REPORT_DATA of the hardware report.
-func TestBindingValueTestVector(t *testing.T) {
-	handle, _ := hex.DecodeString("f8170e6438729e1e3ded60c7c8b220716b7138f9a7e6250c569f1548790ee25f")
-	subject, _ := hex.DecodeString("3081dc3081830201003021311f301d06035504030c16776f726b6c6f61642e74616372612e6578616d706c653059301306072a8648ce3d020106082a8648ce3d0301070342000458f74deb3089c1ba23a2a630a94812f503377fa33d252cd5b2a287fefa40bca353ff2671caa8565de5cc5d221d2a61e5610f9748224dd4a210c82bdfa329d7c2a000300a06082a8648ce3d0403020348003045022100a214dc7a98c6dd8c702a38cc2acabbf0fc7391491a546720f69bf29fdbe7056202205708ed7cf3fc25d8f2501639a589a69be2aa8468f97ff4008d3ea124147a0347")
-	want, _ := hex.DecodeString("c5d8f3e4a93130e864df61ef1bf940223d8d891fa668d21aceffb34f20473065c3cf80a64ccd0c8c5a60717a5d25cb8b2131bf2e51be88f7beadba6bb181d4ca")
-	const target, rrpID = "https://db.tacra.example", "https://ca1.tacra.example"
-	if got := bindingValue(handle, target, rrpID, subject); !bytes.Equal(got, want) {
-		t.Fatalf("binding value %x, want %x", got, want)
+// A hardware test vector of the binding without the RRP identifier: the present-nonce Enrollment case of the bench's
+// GCP SEV-SNP run 20261008T205230Z-gcp-sev-snp-no-rrp-id (nikolaichuk7/attestation-bench, hwcheck/evidence), whose
+// SHA-512(binding_input) with an empty identifier field equals REPORT_DATA of the hardware report (offset 0x50), and
+// whose value with the Credential Authority's identifier does not.
+func TestBindingValueHardwareVector(t *testing.T) {
+	handle, _ := hex.DecodeString("2550eda6542e3466031c0f27e11172dba8b8a793327cb3ba0c1e45529b0b1766")
+	subject, _ := hex.DecodeString("3081dc3081830201003021311f301d06035504031316776f726b6c6f61642e74616372612e6578616d706c653059301306072a8648ce3d020106082a8648ce3d03010703420004d0ac20c555d1ed5bbd290a175a8781abfe2349f9145894e10061f4857f79d4ad9aa22d02619323708103d3cd3335a5b79127d325154601d35195566042cd99d9a000300a06082a8648ce3d0403020348003045022100a11c21faec75689d10bd28d37e785e21f76e43a84c58c17e8176947c0e678b9a0220013be8138ce258355ab354df531ff840d3c34bf8322d68d27e50385a679022d0")
+	reportData, _ := hex.DecodeString("2c9ff509e7312ca53bc61ce96a03e73323d9b12e076ee0333aadc5123eaff848523a6615ff9ea27cd9681b0dd60c60a2631776c7d230c88f63a70e3fd37c4e04")
+	const target = "https://db.tacra.example"
+	if len(subject) != 223 || len(reportData) != 64 {
+		t.Fatalf("vector: subject %d octets, REPORT_DATA %d", len(subject), len(reportData))
 	}
-	// the repository's own encoder has the earlier order, and so another value for the same four inputs
-	if bytes.Equal(est.BindingDigest(handle, rrpID, target, subject), want) {
-		t.Fatal("est.BindingDigest now gives the TACRA order: this backend can use it again")
+	if got := bindingValue(handle, target, subject); !bytes.Equal(got, reportData) {
+		t.Fatalf("binding value %x, want REPORT_DATA %x", got, reportData)
+	}
+	// the repository's own encoder has another layout (no identifier field at all), and so another value
+	if bytes.Equal(est.BindingDigest(handle, target, subject), reportData) {
+		t.Fatal("est.BindingDigest now gives the TACRA layout: this backend can use it again")
 	}
 }
 
-// The #20 variant: with OmitRRPIDInBinding the server binds no identifier, as an RRP that omits it recomputes.
-func TestBoundID(t *testing.T) {
-	r := RRP{RRPID: "https://ca1.tacra.example"}
-	if r.boundID() != r.RRPID {
-		t.Errorf("boundID %q, want the RRP's own", r.boundID())
+// The layout of Section 4.5 is kept: the identifier field is present and empty, so that the value equals the one an
+// RRP computes with an empty identifier, as the bench's RRPs did in the runs of 8 October 2026.
+func TestBindingValueEmptyIdentifierField(t *testing.T) {
+	handle, subject := []byte("h"), []byte("a CSR")
+	const target = "https://db.tacra.example"
+	var in []byte
+	for _, v := range [][]byte{handle, []byte(target), nil, subject} {
+		in = append(in, byte(len(v)>>24), byte(len(v)>>16), byte(len(v)>>8), byte(len(v)))
+		in = append(in, v...)
 	}
-	r.OmitRRPIDInBinding = true
-	if r.boundID() != "" {
-		t.Errorf("boundID %q with the identifier omitted, want none", r.boundID())
-	}
-	subject := []byte("a CSR")
-	if !bytes.Equal(bindingValue(nil, "https://db.tacra.example", r.boundID(), subject),
-		bindingValue(nil, "https://db.tacra.example", "", subject)) {
-		t.Error("the omitted identifier does not bind as the empty string")
+	if got := bindingValue(handle, target, subject); !bytes.Equal(got, sha512Sum(in)) {
+		t.Errorf("binding value %x, want the layout with an empty third field", got)
 	}
 }
