@@ -55,36 +55,38 @@ const (
 	mimeTypeCertificate      = "application/pkix-cert"
 	mimeTypeCSRAttrs         = "application/csrattrs"
 	mimeTypeJSON             = "application/json"
-	// The media types of the attest-* resources' JSON messages, one for each message type, as each EST message type
-	// has its own (RFC 7030, Section 3.2.4): the attest-initiate response, the attest-enroll request (its response is
-	// simpleenroll's), the attest-retrieve request, and its response, the EncryptedCredentialBundle. The wire format
-	// proposed for draft-novak-lamps-tacra-est asks IANA to register them; the names are the ones the reference
-	// implementation uses.
+	mimeTypeMultipart        = "multipart/mixed"
+	mimeTypeOctetStream      = "application/octet-stream"
+	mimeTypePKCS10           = "application/pkcs10"
+	mimeTypePKCS7            = "application/pkcs7-mime"
+	mimeTypePKCS7CertsOnly   = "application/pkcs7-mime; smime-type=certs-only"
+	mimeTypePKCS7Enveloped   = "application/pkcs7-mime; smime-type=enveloped-data"
+	mimeTypePKCS7GenKey      = "application/pkcs7-mime; smime-type=server-generated-key"
+	mimeTypePKCS8            = "application/pkcs8"
+	mimeTypeProblemJSON      = "application/problem+json"
+	mimeTypeTextPlain        = "text/plain"
+	mimeTypeTextPlainUTF8    = "text/plain; charset=utf-8"
+	paramValueCertsOnly      = "certs-only"
+	paramValueGenKey         = "server-generated-key"
+	retryAfterHeader         = "Retry-After"
+	serverHeader             = "Server"
+	serverKeyGenBoundary     = "estServerKeyGenBoundary"
+	strictTransportHeader    = "Strict-Transport-Security"
+	tpmEnrollBoundary        = "estTPMEnrollBoundary"
+	transferEncodingHeader   = "Content-Transfer-Encoding"
+	userAgentHeader          = "User-Agent"
+	wwwAuthenticateHeader    = "WWW-Authenticate"
+)
+
+// The media types of the attest-* resources' JSON messages, one for each message type, as each EST message type
+// has its own (RFC 7030, Section 3.2.4): the attest-initiate response, the attest-enroll request (its response is
+// simpleenroll's), the attest-retrieve request, and its response, the EncryptedCredentialBundle. The wire format
+// of draft-novak-lamps-tacra-est asks IANA to register them; the names are the ones the reference implementation uses.
+const (
 	mimeTypeAttestInitiate = "application/est-attest-initiate+json"
 	mimeTypeAttestEnroll   = "application/est-attest-enroll+json"
 	mimeTypeAttestRetrieve = "application/est-attest-retrieve+json"
 	mimeTypeAttestBundle   = "application/est-attest-bundle+json"
-	mimeTypeMultipart      = "multipart/mixed"
-	mimeTypeOctetStream    = "application/octet-stream"
-	mimeTypePKCS10         = "application/pkcs10"
-	mimeTypePKCS7          = "application/pkcs7-mime"
-	mimeTypePKCS7CertsOnly = "application/pkcs7-mime; smime-type=certs-only"
-	mimeTypePKCS7Enveloped = "application/pkcs7-mime; smime-type=enveloped-data"
-	mimeTypePKCS7GenKey    = "application/pkcs7-mime; smime-type=server-generated-key"
-	mimeTypePKCS8          = "application/pkcs8"
-	mimeTypeProblemJSON    = "application/problem+json"
-	mimeTypeTextPlain      = "text/plain"
-	mimeTypeTextPlainUTF8  = "text/plain; charset=utf-8"
-	paramValueCertsOnly    = "certs-only"
-	paramValueGenKey       = "server-generated-key"
-	retryAfterHeader       = "Retry-After"
-	serverHeader           = "Server"
-	serverKeyGenBoundary   = "estServerKeyGenBoundary"
-	strictTransportHeader  = "Strict-Transport-Security"
-	tpmEnrollBoundary      = "estTPMEnrollBoundary"
-	transferEncodingHeader = "Content-Transfer-Encoding"
-	userAgentHeader        = "User-Agent"
-	wwwAuthenticateHeader  = "WWW-Authenticate"
 )
 
 // Other variables.
