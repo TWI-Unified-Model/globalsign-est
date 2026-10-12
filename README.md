@@ -128,3 +128,102 @@ use that chain to reenroll:
 Note that when we omit the `-csr` option when reenrolling, the EST client
 automatically generates a CSR for us by copying the subject field and subject
 alternative name extension from the certificate we're renewing.
+
+## Attested credential acquisition (TACRA)
+
+This fork adds the three resources of
+[draft-novak-lamps-tacra-est](https://datatracker.ietf.org/doc/draft-novak-lamps-tacra-est/)
+to the server and to the client library: an Attester in a TEE obtains a
+credential by proving, with its Evidence, that it is the workload the
+Relying Party expects, in one of two modes.
+
+| Resource | Method and request | Response |
+|---|---|---|
+| `/.well-known/est/attest-initiate` | `GET`, query `target` and `credential_type`; `Accept: application/est-attest-initiate+json` | the Freshness Kind of the Target, a Handle when the kind is `present-*`, the acceptable Evidence formats and key algorithms |
+| `/.well-known/est/attest-enroll` | `POST application/est-attest-enroll+json`: a CSR and Evidence bound to it | the certificate, `application/pkcs7-mime` base64 (as simpleenroll) |
+| `/.well-known/est/attest-retrieve` | `POST application/est-attest-retrieve+json`: a CEK public key and Evidence bound to it | `application/est-attest-bundle+json`: the credential in a container sealed to the CEK |
+
+Every request is checked against the draft's syntax before anything else
+(`attest_syntax.go`); a request the draft does not describe is refused
+with 400 and a reason. The server runs with one of two backends.
+
+### The mock backend: a mock CA, a mock TEE and a mock Verifier
+
+For development and tests. The configuration names the Targets the CAS
+serves, each with its mechanism and Freshness Kind, and the public key of
+the mock TEE provider whose Evidence the mock Verifier accepts:
+
+    user@host:$ openssl ecparam -name prime256v1 -genkey -noout -out provider.key
+    user@host:$ openssl pkey -in provider.key -pubout -out provider.pub
+    user@host:$ cat estserver.json
+    {
+        "attest": {
+            "trusted_provider_public_key": "provider.pub",
+            "targets": [
+                { "name": "https://db.example", "mechanism": "enroll", "freshness_kind": "present-nonce", "credential_types": ["x509"] },
+                { "name": "https://ledger.example", "mechanism": "retrieve", "freshness_kind": "absent-timestamp", "max_age": 120, "credential_types": ["api-key", "x509"] }
+            ]
+        }
+    }
+    user@host:$ estserver -config estserver.json &
+
+`estserver -sampleconfig` prints a complete sample. Without a `mock_ca`
+section the CA is transient, and without a `tls` section the server listens
+on port 8443 with a transient certificate, as in the Quickstart. The first
+leg of an acquisition is a `GET`:
+
+    user@host:$ curl -sk -H "Accept: application/est-attest-initiate+json" \
+        "https://localhost:8443/.well-known/est/attest-initiate?target=https://db.example&credential_type=x509"
+    {"freshness_kind":"present-nonce","handle":"SGqaUOg9ylgU9U51os-mt05bvO9_miwNAdJqU8Tzk64","expires_in":300,"acceptable_evidence":["application/eat+cwt; eat_profile=\"https://twi.confidentialcomputing.io/tacra-est-mock/1.0.0\""],"acceptable_csk":["ecdsa-p256-sha256"],"mode":"enroll"}
+
+    user@host:$ curl -sk -H "Accept: application/est-attest-initiate+json" \
+        "https://localhost:8443/.well-known/est/attest-initiate?target=https://ledger.example&credential_type=x509"
+    {"freshness_kind":"absent-timestamp","max_age":120,"acceptable_evidence":["application/eat+cwt; eat_profile=\"https://twi.confidentialcomputing.io/tacra-est-mock/1.0.0\""],"acceptable_cek":["ECDH-P256+HKDF-SHA256+A256GCM"],"mode":"retrieve"}
+
+A Target the configuration does not name is refused with 403. The second
+leg needs Evidence: the library makes the mock TEE's (`est.NewMockEvidence`,
+signed with `provider.key`) and the client sends it (`est.Client`'s
+`InitiateRemoteAttestation`, `EnrollCredential` and `RetrieveCredential`).
+`attest_mock_flow_test.go` runs the whole path through the wire, for every
+Freshness Kind, in Enrollment and in Retrieval, with the refusals a changed
+input meets, and opens the Retrieval container to check the certificate, its
+key and the CA chain it releases:
+
+    user@host:$ go test -run TestMockFlow .
+    ok      github.com/globalsign/est       0.438s
+
+### The TACRA backend: deployed Verifiers and RRPs
+
+For a deployment. With a `tacra` section the server has no CA of its own: it
+is the CAS of the draft, an untrusted conduit between the Attester and the
+Verifiers and RATS-unaware Relying Parties (RRPs) it is configured with.
+`estserver.json.example` shows the shape; the keys are:
+
+- `tls`: required, with `client_cas`; the resources are reached over mutual
+  TLS.
+- `tacra.client_cert`, `tacra.client_key`: this server's certificate on its
+  calls to the Verifiers and the RRPs, which take only callers they know.
+- `tacra.verifiers`: by name, `url`, `ca` (of its TLS certificate) and
+  `provider`, the TSM report provider of the Evidence it appraises
+  (`sev_guest`, `tdx_guest`).
+- `tacra.rrps`: by name, `url`, `ca`, `mode` (`enroll` for a Credential
+  Authority, `retrieve` for a Secret Vault), `rats_model` (`passport`: this
+  server obtains the Attestation Results from the Verifier the RRP's policy
+  names in `verifiers`; `background-check`: the RRP obtains them from the
+  Evidence this server forwards).
+- `tacra.targets`: each Target the server serves, and the RRP that provisions
+  it.
+- `tacra.acceptable_evidence`: the Evidence media types attest-initiate
+  offers (`application/vnd.veraison.tsm-report+cbor` for SEV-SNP and TDX
+  reports through configfs-tsm).
+- `tacra.ca_certs`: the PEM chain served at `/cacerts`.
+- `wire_log` (optional, at the top level): a file where every attest-*
+  exchange is written as it crossed the wire, one JSON object per line.
+
+The configuration is decoded strictly: an unknown member, or the mock
+backend's `mock_ca` and `attest` sections beside `tacra`, is an error at
+start. The backend's tests (`internal/tacra`) cover the wire syntax, the
+binding, the sessions and the conduit in process, and the backend's answers
+when a Verifier or an RRP cannot be reached; `internal/refvectors` checks the
+library's messages against the vectors a reference implementation recorded
+on Google Cloud SEV-SNP hardware.
