@@ -257,9 +257,14 @@ func mockPCRs() map[int][]byte {
 }
 
 // NewMockEvidence returns a CBOR COSE_Sign1 EAT signed by the supplied mock
-// provider key. The provider retains ownership of the private key. target is
+// provider key. The provider retains ownership of the private key.
+// freshnessHandle is the freshness element the Evidence binds and the
+// second-leg request carries as its handle: the Handle of attest-initiate for
+// present-nonce and present-epoch, the epoch marker the Attester holds for
+// absent-epoch, the timestamp element of the Attester's clock for
+// absent-timestamp (TimestampElement), and nothing for absent-none. target is
 // the value the Attester intends to bind, and subject is the CSR DER
-// (enrollment) or CEKpub SubjectPublicKeyInfo DER (retrieval); both are folded
+// (enrollment) or CEKpub SubjectPublicKeyInfo DER (retrieval); all are folded
 // into the direct-form binding_input digest of {{binding-input}}.
 func NewMockEvidence(
 	signer crypto.Signer,
@@ -268,15 +273,27 @@ func NewMockEvidence(
 	target string,
 	subject []byte,
 ) ([]byte, error) {
+	// The issued-at time is the Attester's clock reading: for absent-timestamp
+	// the one the freshness element encodes, so that the Evidence and the
+	// request carry the same instant.
+	issuedAt := time.Now()
+	if freshnessKind == FreshnessAbsentTimestamp {
+		stamped, err := TimestampFromElement(freshnessHandle)
+		if err != nil {
+			return nil, err
+		}
+		issuedAt = stamped
+	}
 	return NewMockEvidenceAt(
-		signer, freshnessKind, freshnessHandle, target, subject, time.Now(),
+		signer, freshnessKind, freshnessHandle, target, subject, issuedAt,
 	)
 }
 
 // NewMockEvidenceAt is NewMockEvidence with an explicit trusted-clock time.
 // It exists so absent-timestamp freshness and its age boundaries can be tested
-// deterministically. Production Evidence generation must obtain this value
-// from the Attester's trusted clock.
+// deterministically; for absent-timestamp, freshnessHandle must be the
+// timestamp element of issuedAt. Production Evidence generation must obtain
+// this value from the Attester's trusted clock.
 func NewMockEvidenceAt(
 	signer crypto.Signer,
 	freshnessKind string,
@@ -313,7 +330,11 @@ func NewMockEvidenceAt(
 		if err := nonce.Add(freshnessHandle); err != nil {
 			return nil, fmt.Errorf("create mock EAT nonce: %w", err)
 		}
-	case FreshnessAbsentTimestamp, FreshnessAbsentNone:
+	case FreshnessAbsentTimestamp:
+		if !bytes.Equal(freshnessHandle, TimestampElement(issuedAt)) {
+			return nil, fmt.Errorf("freshness handle must be the timestamp element of the issued-at time for %s", freshnessKind)
+		}
+	case FreshnessAbsentNone:
 		if len(freshnessHandle) != 0 {
 			return nil, fmt.Errorf("freshness handle must be absent for %s", freshnessKind)
 		}
@@ -438,6 +459,31 @@ func VerifyMockEvidence(evidence []byte, providerKey crypto.PublicKey) (*MockEAT
 	}
 
 	return &claims, nil
+}
+
+// TimestampElementSize is the length in octets of the absent-timestamp
+// freshness element.
+const TimestampElementSize = 8
+
+// TimestampElement is the absent-timestamp freshness element of t: seconds
+// since 1970-01-01T00:00:00Z as an 8-octet big-endian unsigned integer, the
+// encoding TACRA's binding gives the Attester's timestamp. The Attester binds
+// it in Evidence and carries it as the handle of attest-enroll and
+// attest-retrieve, since the Evidence of a hardware TEE carries no clock
+// reading of its own.
+func TimestampElement(t time.Time) []byte {
+	return binary.BigEndian.AppendUint64(nil, uint64(t.Unix()))
+}
+
+// TimestampFromElement is the time an absent-timestamp freshness element
+// encodes.
+func TimestampFromElement(element []byte) (time.Time, error) {
+	if len(element) != TimestampElementSize {
+		return time.Time{}, fmt.Errorf(
+			"absent-timestamp freshness element: %d octets, not %d", len(element), TimestampElementSize,
+		)
+	}
+	return time.Unix(int64(binary.BigEndian.Uint64(element)), 0), nil
 }
 
 // CSRHash returns the SHA-256 digest of a DER-encoded PKCS#10 CSR, for use as
