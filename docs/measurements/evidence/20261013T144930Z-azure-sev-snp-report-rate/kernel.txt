@@ -1,0 +1,16 @@
+Linux rr-snp 6.17.0-1018-azure-fde #18~24.04.1-Ubuntu SMP Mon Jul  6 22:24:09 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+ls: cannot access '/dev/sev-guest': No such file or directory
+crw-rw---- 1 tss tss 252, 65536 Oct 13 14:50 /dev/tpmrm0
+drwxr-xr-x 2 root root 0 Oct 13 14:50 /sys/kernel/config/tsm/report
+ERROR:tcti:src/tss2-tcti/tcti-device.c:451:Tss2_Tcti_Device_Init() Failed to open specified TCTI device file /dev/tpmrm0: Permission denied 
+ERROR:tcti:src/tss2-tcti/tctildr-dl.c:169:tcti_from_file() Could not initialize TCTI file: libtss2-tcti-device.so.0 
+ERROR:tcti:src/tss2-tcti/tcti-device.c:451:Tss2_Tcti_Device_Init() Failed to open specified TCTI device file /dev/tpm0: Permission denied 
+ERROR:tcti:src/tss2-tcti/tctildr-dl.c:169:tcti_from_file() Could not initialize TCTI file: libtss2-tcti-device.so.0 
+WARNING:tcti:src/util/io.c:262:socket_connect() Failed to connect to host 127.0.0.1, port 2321: errno 111: Connection refused 
+ERROR:tcti:src/tss2-tcti/tcti-swtpm.c:613:Tss2_Tcti_Swtpm_Init() Cannot connect to swtpm TPM socket 
+ERROR:tcti:src/tss2-tcti/tctildr-dl.c:169:tcti_from_file() Could not initialize TCTI file: libtss2-tcti-swtpm.so.0 
+WARNING:tcti:src/util/io.c:262:socket_connect() Failed to connect to host 127.0.0.1, port 2321: errno 111: Connection refused 
+ERROR:tcti:src/tss2-tcti/tctildr-dl.c:169:tcti_from_file() Could not initialize TCTI file: libtss2-tcti-mssim.so.0 
+ERROR:tcti:src/tss2-tcti/tctildr-dl.c:269:tctildr_get_default() No standard TCTI could be loaded 
+ERROR:tcti:src/tss2-tcti/tctildr.c:430:Tss2_TctiLdr_Initialize_Ex() Failed to instantiate TCTI 
+ERROR: Could not load tcti, got: "(null)"

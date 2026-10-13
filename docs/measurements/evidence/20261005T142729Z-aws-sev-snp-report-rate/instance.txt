@@ -1,0 +1,1 @@
+us-east-2 us-east-2a i-088c09e5a075a7bc0 ami-0fa99aa8f97f9e30b c6a.large

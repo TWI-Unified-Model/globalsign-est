@@ -1,0 +1,4 @@
+Linux report-rate-tdx-2610051450.us-central1-a.c.rats-probe.internal 7.0.0-1011-gcp #11~24.04.1-Ubuntu SMP PREEMPT Tue Aug 11 20:14:48 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+ls: cannot access '/dev/sev-guest': No such file or directory
+crw------- 1 root root 10, 263 Oct  5 14:51 /dev/tdx_guest
+drwxr-xr-x 2 root root 0 Oct  5 14:50 /sys/kernel/config/tsm/report

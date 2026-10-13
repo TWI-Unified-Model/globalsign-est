@@ -1,0 +1,11 @@
+{
+  "security": {
+    "securityType": "ConfidentialVM",
+    "uefiSettings": {
+      "secureBootEnabled": true,
+      "vTpmEnabled": true
+    }
+  },
+  "size": "Standard_DC2as_v5",
+  "zone": null
+}

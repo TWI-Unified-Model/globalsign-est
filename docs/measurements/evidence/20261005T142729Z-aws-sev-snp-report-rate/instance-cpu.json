@@ -1,0 +1,9 @@
+{
+    "type": "c6a.large",
+    "az": "us-east-2a",
+    "cpu": {
+        "CoreCount": 1,
+        "ThreadsPerCore": 2,
+        "AmdSevSnp": "enabled"
+    }
+}

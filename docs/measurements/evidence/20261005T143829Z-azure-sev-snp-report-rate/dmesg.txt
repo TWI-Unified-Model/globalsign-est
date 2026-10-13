@@ -1,0 +1,49 @@
+[    0.000000] efi: ACPI=0xbfffa000 ACPI 2.0=0xbfffa014 SMBIOS=0xbff88000 SMBIOS 3.0=0xbff86000 TPMFinalLog=0xbecf1000 MEMATTR=0xbecb9118 MOKvar=0xbff84000 INITRD=0xbeca9f98 RNG=0xbffd2018 TPMEventLog=0xbec87018 
+[    0.089003] ACPI: TPM2 0x00000000BFFD3000 000034 (v03 VRTUAL VTPM     00000001 MSFT 00000001)
+[    0.117808] ACPI: Reserving TPM2 table memory at [mem 0xbffd3000-0xbffd3033]
+[    0.536975] APIC: send_IPI() replaced with hv_send_ipi()
+[    0.539477] APIC: send_IPI_mask() replaced with hv_send_ipi_mask()
+[    0.542446] APIC: send_IPI_mask_allbutself() replaced with hv_send_ipi_mask_allbutself()
+[    0.546174] APIC: send_IPI_allbutself() replaced with hv_send_ipi_allbutself()
+[    0.549489] APIC: send_IPI_all() replaced with hv_send_ipi_all()
+[    0.552284] APIC: send_IPI_self() replaced with hv_send_ipi_self()
+[    0.555131] APIC: eoi() replaced with hv_apic_eoi_write()
+[    0.561315] Memory Encryption Features active: AMD SEV
+[    0.561315] SEV: Status: vTom 
+[    0.842490] hv_vmbus: hv_mmio=[mem 0xc0000000-0xfed3ffff],[mem 0xfe0000000-0xfffffffff] fb=[mem 0xc0000000-0xc7ffffff]
+[    0.849551] hv_vmbus: Vmbus version:5.3
+[    0.853518] hv_vmbus: Invalid offer 2 from the host supporting isolation
+[    1.085701] hv_vmbus: registering driver hv_pci
+[    1.131275] tpm_crb MSFT1001:00: Disabling hwrng
+[    1.139440] hv_vmbus: registering driver hv_storvsc
+[    1.220945] hv_utils: Registering HyperV Utility Driver
+[    1.223470] hv_vmbus: registering driver hv_utils
+[    1.226251] hv_vmbus: registering driver hv_balloon
+[    1.239660] hv_utils: TimeSync IC version 4.0
+[    1.243400] hv_utils: Heartbeat IC version 3.0
+[    1.250854] hv_utils: Shutdown IC version 3.2
+[    1.264260] kvm-guest: setup_efi_kvm_sev_migration : EFI live migration variable not found
+[    1.707314] systemd[1]: systemd 255.4-1ubuntu8.16 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK -XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified)
+[    1.715681] systemd[1]: Detected confidential virtualization sev-snp.
+[    1.891355] systemd[1]: Listening on systemd-pcrextend.socket - TPM2 PCR Extension (Varlink).
+[    2.032286] systemd[1]: systemd-pcrmachine.service - TPM2 PCR Machine ID Measurement was skipped because of an unmet condition check (ConditionPathExists=!/etc/initrd-release).
+[    2.484138] hv_storvsc f8b3781a-1e82-4818-a1c3-63d806ec15bb: tag#162 cmd 0x85 status: scsi 0x2 srb 0x6 host 0xc0000001
+[    4.271893] systemd[1]: systemd 255.4-1ubuntu8.17 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK -XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified)
+[    4.280361] systemd[1]: Detected confidential virtualization sev-snp.
+[    4.769360] systemd[1]: Listening on systemd-pcrextend.socket - TPM2 PCR Extension (Varlink).
+[    5.007042] systemd[1]: Starting systemd-pcrmachine.service - TPM2 PCR Machine ID Measurement...
+[    5.032570] systemd[1]: Starting systemd-tpm2-setup-early.service - TPM2 SRK Setup (Early)...
+[    5.743664] hv_storvsc f8b3781a-1e82-4818-a1c3-63d806ec15bb: tag#244 cmd 0x85 status: scsi 0x2 srb 0x6 host 0xc0000001
+[    5.846261] hv_vmbus: registering driver hv_netvsc
+[    5.852237] hv_netvsc 70a8a531-3b58-70a8-a531-3b5870a8a531 (unnamed net_device) (uninitialized): SR-IOV not advertised by guests on the host supporting isolation
+[    9.605950] hv_storvsc f8b3781a-1e82-4818-a1c3-63d806ec15bb: tag#185 cmd 0x85 status: scsi 0x2 srb 0x6 host 0xc0000001
+[   76.814509] workqueue: tpm_dev_async_work hogged CPU for >10000us 4 times, consider switching to WQ_UNBOUND
+[   76.856422] workqueue: tpm_dev_async_work hogged CPU for >10000us 5 times, consider switching to WQ_UNBOUND
+[   76.947595] workqueue: tpm_dev_async_work hogged CPU for >10000us 7 times, consider switching to WQ_UNBOUND
+[   77.129639] workqueue: tpm_dev_async_work hogged CPU for >10000us 11 times, consider switching to WQ_UNBOUND
+[   77.494189] workqueue: tpm_dev_async_work hogged CPU for >10000us 19 times, consider switching to WQ_UNBOUND
+[   78.225749] workqueue: tpm_dev_async_work hogged CPU for >10000us 35 times, consider switching to WQ_UNBOUND
+[   79.692738] workqueue: tpm_dev_async_work hogged CPU for >10000us 67 times, consider switching to WQ_UNBOUND
+[   82.592408] workqueue: tpm_dev_async_work hogged CPU for >10000us 131 times, consider switching to WQ_UNBOUND
+[   90.664122] workqueue: tpm_dev_async_work hogged CPU for >10000us 259 times, consider switching to WQ_UNBOUND
+[  243.930494] workqueue: tpm_dev_async_work hogged CPU for >10000us 515 times, consider switching to WQ_UNBOUND

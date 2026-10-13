@@ -1,0 +1,26 @@
+{
+ "stamp": "20261013T145928Z",
+ "host": "rr-snp",
+ "mode": "snp-ioctl",
+ "kernel": "6.17.0-1018-azure-fde",
+ "probe": {
+  "ioctl": null,
+  "key_sel": 0,
+  "first_ext_error": null
+ },
+ "drills": {
+  "D8_report_burst": {
+   "n": 0,
+   "requested": 5,
+   "total_s": 0.0,
+   "per_call_ms": [],
+   "slow_reports": [],
+   "errors": [
+    {
+     "index": 1,
+     "error": "[Errno 2] No such file or directory: '/dev/sev-guest'"
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,4 @@
+Linux report-rate-sev-snp-2610131435 7.0.0-1014-gcp #14~24.04.1-Ubuntu SMP PREEMPT Thu Sep 17 19:52:35 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+ls: cannot access '/dev/tdx_guest': No such file or directory
+crw------- 1 root root 10, 260 Oct 13 14:36 /dev/sev-guest
+drwxr-xr-x 2 root root 0 Oct 13 14:36 /sys/kernel/config/tsm/report
