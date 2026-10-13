@@ -1,0 +1,4 @@
+instance i-081d73d37b383f07b: terminated
+security group sg-04eb794f808825ceb deleted
+key pair report-rate-2610131445 deleted
+instances tagged report-rate-* not terminated: 0

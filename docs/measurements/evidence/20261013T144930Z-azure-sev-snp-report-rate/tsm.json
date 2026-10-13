@@ -1,0 +1,24 @@
+{
+ "stamp": "20261013T145928Z",
+ "host": "rr-snp",
+ "mode": "tsm",
+ "kernel": "6.17.0-1018-azure-fde",
+ "probe": {
+  "provider": null
+ },
+ "drills": {
+  "D8_report_burst": {
+   "n": 0,
+   "requested": 5,
+   "total_s": 0.0,
+   "per_call_ms": [],
+   "slow_reports": [],
+   "errors": [
+    {
+     "index": 1,
+     "error": "[Errno 6] No such device or address: '/sys/kernel/config/tsm/report/burst-ca0099fb96dc'"
+    }
+   ]
+  }
+ }
+}

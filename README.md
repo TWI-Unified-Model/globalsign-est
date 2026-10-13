@@ -227,3 +227,18 @@ binding, the sessions and the conduit in process, and the backend's answers
 when a Verifier or an RRP cannot be reached; `internal/refvectors` checks the
 library's messages against the vectors a reference implementation recorded
 on Google Cloud SEV-SNP hardware.
+
+## Formal model and measurements
+
+`formal/` holds the ProVerif models of the credential-acquisition exchange
+and the binding of TACRA Section 4.5, with the tool's output: the attacks
+the binding of draft -00 admitted, the proofs with the binding in place, and
+what each guarantee depends on, including where the Relying Party identifier
+comes from and whether it is bound at all (`formal/README.md`).
+`docs/measurements/` holds the measurements behind two sentences of the
+drafts, with the runs they come from: how long a confidential VM takes to
+produce fresh Evidence on AWS, Azure and Google Cloud, SEV-SNP and TDX
+([report-rate.md](docs/measurements/report-rate.md)), and why a Freshness
+Handle's lifetime has a floor
+([handle-lifetime.md](docs/measurements/handle-lifetime.md));
+`scripts/measure/` repeats them on a cloud account of your own.

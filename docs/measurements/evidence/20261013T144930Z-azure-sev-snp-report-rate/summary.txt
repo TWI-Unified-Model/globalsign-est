@@ -1,0 +1,5 @@
+{"mode": "vtpm-quote", "n": 200, "median_ms": 44.06, "max_ms": 59.4, "stalls": 0, "errors": [], "ak": "persistent 0x81000003", "tpm2_getrandom_baseline": {"n": 20, "median_ms": 7.46, "max_ms": 9.47}}
+{"mode": "azure-hcl", "n": 200, "median_ms": 1578.11, "max_ms": 2119.7, "stalls": 111, "errors": [], "calls": 200, "report_data_changed": 102, "user_data_found": 103, "tpm2_getrandom_baseline": {"n": 20, "median_ms": 7.39, "max_ms": 7.76}}
+{"mode": "azure-hcl-fresh", "n": 100, "median_ms": 2700.89, "max_ms": 2855.1, "stalls": 100, "errors": [], "calls": 100, "report_data_changed": 0, "user_data_found": 100}
+{"mode": "snp-ioctl", "n": 0, "median_ms": null, "max_ms": null, "stalls": 0, "errors": [{"index": 1, "error": "[Errno 2] No such file or directory: '/dev/sev-guest'"}], "ioctl": null, "key_sel": 0, "first_ext_error": null}
+{"mode": "tsm", "n": 0, "median_ms": null, "max_ms": null, "stalls": 0, "errors": [{"index": 1, "error": "[Errno 6] No such device or address: '/sys/kernel/config/tsm/report/burst-ca0099fb96dc'"}], "provider": null}

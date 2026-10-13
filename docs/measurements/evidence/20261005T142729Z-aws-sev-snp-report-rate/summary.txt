@@ -1,0 +1,2 @@
+{"mode": "snp-ioctl", "n": 200, "median_ms": 6.99, "max_ms": 7.8, "stalls": 0, "errors": [], "ioctl": "SNP_GET_EXT_REPORT", "key_sel": 0, "first_ext_error": null}
+{"mode": "tsm", "n": 200, "median_ms": 7.87, "max_ms": 8.8, "stalls": 0, "errors": [], "provider": "sev_guest"}

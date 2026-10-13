@@ -1,0 +1,1 @@
+westeurope report-rate-2610051438 rr-snp Standard_DC2as_v5 Canonical:ubuntu-24_04-lts:cvm:latest

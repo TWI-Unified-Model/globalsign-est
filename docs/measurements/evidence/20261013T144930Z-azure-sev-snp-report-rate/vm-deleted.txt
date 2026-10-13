@@ -1,0 +1,2 @@
+resource group report-rate-2610131449 exists after delete: false
+resource groups named report-rate-* left: 0
