@@ -127,7 +127,7 @@ const sample = `{
         "[::1]"
     ],
     "attest": {
-		"trusted_provider_public_key": "/path/to/mock/provider-public-key.pem",
+        "trusted_provider_public_key": "/path/to/mock/provider-public-key.pem",
         "targets": [
             {
                 "name": "RUP-workload-1",
