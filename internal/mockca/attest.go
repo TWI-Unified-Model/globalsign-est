@@ -87,6 +87,7 @@ type AttestedCA struct {
 
 	targets            map[string]TargetPolicy
 	trustedProviderKey crypto.PublicKey
+	vaultSigner        *ecdsa.PrivateKey // signs the containers the mock Secret Vault releases (attest_bundle.go)
 
 	mu     sync.Mutex
 	nonces map[string]*nonceState
@@ -96,6 +97,10 @@ type AttestedCA struct {
 // NewAttested wraps a MockCA with mock attestation support. If targets is
 // empty, a default enroll target and retrieve target are configured.
 func NewAttested(ca *MockCA, targets []TargetPolicy, trustedProviderKey crypto.PublicKey) *AttestedCA {
+	vaultSigner, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(fmt.Sprintf("mockca: generate the Secret Vault's signature key: %v", err))
+	}
 	policies := make(map[string]TargetPolicy)
 	for _, t := range targets {
 		if t.Name == "" {
@@ -122,6 +127,7 @@ func NewAttested(ca *MockCA, targets []TargetPolicy, trustedProviderKey crypto.P
 		MockCA:             ca,
 		targets:            policies,
 		trustedProviderKey: trustedProviderKey,
+		vaultSigner:        vaultSigner,
 		nonces:             make(map[string]*nonceState),
 		groups:             make(map[string]*est.CredentialBundle),
 	}
@@ -267,7 +273,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 	}
 
 	if mechanism == est.MechanismRetrieve {
-		resp.AcceptableCEK = []string{est.EncECDHP256}
+		resp.AcceptableCEK = []string{est.AcceptableCEKMLKEM768P256, est.AcceptableCEKDHKEMP256}
 	} else {
 		resp.AcceptableCSK = []string{est.SigECDSAP256SHA256}
 	}
@@ -581,13 +587,12 @@ func (ca *AttestedCA) vaultBundle(
 	}
 
 	bundle := &est.CredentialBundle{
-		GroupID: gid,
 		CredentialItems: []est.CredentialItem{
-			{Type: est.CredentialItemX509Cert, Data: cert.Raw},
-			{Type: est.CredentialItemPKCS8Key, Data: keyDER},
-			{Type: est.CredentialItemCACertsPEM, Data: chain.Bytes()},
+			est.NewCredentialItem(est.CredentialItemX509Cert, "der", cert.Raw),
+			est.NewCredentialItem(est.CredentialItemPKCS8Key, "pkcs8", keyDER),
+			est.NewCredentialItem(est.CredentialItemCACertsPEM, "pem", chain.Bytes()),
 		},
-		Metadata: map[string]string{
+		Metadata: map[string]any{
 			"not_after":      cert.NotAfter.UTC().Format(time.RFC3339),
 			"policy_version": res.PolicyVersion,
 			"target":         res.Target,
@@ -645,7 +650,7 @@ func (ca *AttestedCA) RetrieveCredential(
 	}
 
 	sealed, err := est.SealCredentialBundle(
-		bundle, req.CEKPub, req.Handle, req.Profile, req.Target, credentialHint,
+		bundle, gid, req.CEKPub, req.Handle, req.Target, credentialHint, ca.vaultSigner,
 	)
 	if err != nil {
 		return nil, caError{
@@ -655,4 +660,10 @@ func (ca *AttestedCA) RetrieveCredential(
 	}
 
 	return sealed, nil
+}
+
+// VaultSigningKey is the public half of the key the mock Secret Vault signs its containers with: the trust anchor an
+// Attester holds for the retrieve Targets of this CA.
+func (ca *AttestedCA) VaultSigningKey() *ecdsa.PublicKey {
+	return &ca.vaultSigner.PublicKey
 }

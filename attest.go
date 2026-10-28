@@ -4,20 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -88,11 +84,6 @@ const (
 	// Retained for documentation only; see BindingCSRHash.
 	BindingCEKThumbprint = "cek-thumbprint"
 )
-
-// EncECDHP256 is the authenticated-encryption suite used to encrypt an
-// EncryptedCredentialBundle to CEKpub. It is a POC stand-in for the HPKE
-// baseline the specification will ultimately mandate.
-const EncECDHP256 = "ECDH-P256+HKDF-SHA256+A256GCM"
 
 // SigECDSAP256SHA256 is the CSK signature algorithm an attest-initiate response
 // offers for Enrollment (acceptable_csk).
@@ -196,34 +187,29 @@ type AttestedRetrievalRequest struct {
 	CredentialHint *string `json:"credential_hint,omitempty"`
 }
 
-// CredentialItem is a single credential inside a decrypted bundle.
+// CredentialItem is a single credential inside a decrypted bundle, the credential-item of the EST draft's CDDL: its
+// type, its value as text, and the format of the octets the value carries ("der", "pkcs8" or "pem" here).
 type CredentialItem struct {
-	Type string `json:"type"`
-	Data []byte `json:"data"`
+	Type   string `json:"type"`
+	Format string `json:"format,omitempty"`
+	Value  string `json:"value"`
 }
 
-// CredentialBundle is the plaintext content of an EncryptedCredentialBundle.
+// NewCredentialItem is an item whose value is the unpadded base64url encoding of octets.
+func NewCredentialItem(typ, format string, octets []byte) CredentialItem {
+	return CredentialItem{Type: typ, Format: format, Value: base64.RawURLEncoding.EncodeToString(octets)}
+}
+
+// Bytes returns the octets an item's value carries.
+func (it CredentialItem) Bytes() ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(it.Value)
+}
+
+// CredentialBundle is the plaintext of an EncryptedCredentialBundle (attest_bundle.go): the credential items and
+// their metadata. The credential group is in the container's associated data.
 type CredentialBundle struct {
-	GroupID         string            `json:"group_id"`
-	CredentialItems []CredentialItem  `json:"credential_items"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
-}
-
-// EncryptedCredentialBundle is an authenticated-encryption container encrypted
-// to CEKpub. The EST server forwards it without being able to read it. The
-// associated data authenticated by Ciphertext binds GroupID, Target, Handle
-// (when present) and CredentialHint (when present); no server identity, as the
-// EST Server is invisible to the Attester (rats-tacra#20, 6 October 2026).
-type EncryptedCredentialBundle struct {
-	GroupID            string `json:"group_id"`
-	Enc                string `json:"enc"`
-	Profile            string `json:"profile,omitempty"`
-	Target             string `json:"target"`
-	Handle             []byte `json:"handle,omitempty"`
-	CredentialHint     string `json:"credential_hint,omitempty"`
-	EphemeralPublicKey []byte `json:"epk"`
-	Nonce              []byte `json:"nonce"`
-	Ciphertext         []byte `json:"ciphertext"`
+	CredentialItems []CredentialItem `json:"credential_items"`
+	Metadata        map[string]any   `json:"metadata,omitempty"` // string keys, any value (validity_seconds is an integer)
 }
 
 // MockEATClaims is the EAT claims set used by the non-production TEE profile.
@@ -523,131 +509,6 @@ func EncodeBindingInput(handle []byte, target string, subject []byte) []byte {
 func BindingDigest(handle []byte, target string, subject []byte) []byte {
 	sum := sha512.Sum512(EncodeBindingInput(handle, target, subject))
 	return sum[:]
-}
-
-// bundleAAD builds the associated data binding the ciphertext to the group ID,
-// Target, Handle and Credential Hint, the draft's encrypted-credential-bundle
-// aad structure without a server identity (rats-tacra#20, 6 October 2026).
-func bundleAAD(groupID, target string, handle []byte, credentialHint string) []byte {
-	aad, _ := json.Marshal(struct {
-		GroupID        string `json:"group_id"`
-		Target         string `json:"target"`
-		Handle         []byte `json:"handle,omitempty"`
-		CredentialHint string `json:"credential_hint,omitempty"`
-	}{groupID, target, handle, credentialHint})
-
-	return aad
-}
-
-// SealCredentialBundle encrypts a credential bundle to an encoded P-256 CEK
-// public key using ECDH, HKDF-SHA256 and AES-256-GCM.
-func SealCredentialBundle(
-	bundle *CredentialBundle,
-	cekPub []byte,
-	handle []byte,
-	profile, target, credentialHint string,
-) (*EncryptedCredentialBundle, error) {
-	pub, err := ecdh.P256().NewPublicKey(cekPub)
-	if err != nil {
-		return nil, fmt.Errorf("invalid CEK public key: %w", err)
-	}
-
-	eph, err := ecdh.P256().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate ephemeral key: %w", err)
-	}
-
-	shared, err := eph.ECDH(pub)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compute shared secret: %w", err)
-	}
-
-	plaintext, err := json.Marshal(bundle)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal credential bundle: %w", err)
-	}
-
-	aad := bundleAAD(bundle.GroupID, target, handle, credentialHint)
-
-	key, err := hkdf.Key(sha256.New, shared, eph.PublicKey().Bytes(), string(aad), 32)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive content encryption key: %w", err)
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
-	}
-
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES-GCM: %w", err)
-	}
-
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, fmt.Errorf("failed to generate nonce: %w", err)
-	}
-
-	return &EncryptedCredentialBundle{
-		GroupID:            bundle.GroupID,
-		Enc:                EncECDHP256,
-		Profile:            profile,
-		Target:             target,
-		Handle:             handle,
-		CredentialHint:     credentialHint,
-		EphemeralPublicKey: eph.PublicKey().Bytes(),
-		Nonce:              nonce,
-		Ciphertext:         aead.Seal(nil, nonce, plaintext, aad),
-	}, nil
-}
-
-// Open decrypts an EncryptedCredentialBundle using the CEK private key. Only
-// the holder of CEKpri can recover the credential, so the contents remain
-// opaque to the EST client and EST server.
-func (b *EncryptedCredentialBundle) Open(cekPriv *ecdh.PrivateKey) (*CredentialBundle, error) {
-	if b.Enc != EncECDHP256 {
-		return nil, fmt.Errorf("unsupported encryption suite %q", b.Enc)
-	}
-
-	epk, err := ecdh.P256().NewPublicKey(b.EphemeralPublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid ephemeral public key: %w", err)
-	}
-
-	shared, err := cekPriv.ECDH(epk)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compute shared secret: %w", err)
-	}
-
-	aad := bundleAAD(b.GroupID, b.Target, b.Handle, b.CredentialHint)
-
-	key, err := hkdf.Key(sha256.New, shared, b.EphemeralPublicKey, string(aad), 32)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive content encryption key: %w", err)
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
-	}
-
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES-GCM: %w", err)
-	}
-
-	plaintext, err := aead.Open(nil, b.Nonce, b.Ciphertext, aad)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt credential bundle: %w", err)
-	}
-
-	var bundle CredentialBundle
-	if err := json.Unmarshal(plaintext, &bundle); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal credential bundle: %w", err)
-	}
-
-	return &bundle, nil
 }
 
 // attestationCAFromContext returns the backing CA as an AttestationCA, or nil

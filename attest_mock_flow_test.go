@@ -6,6 +6,7 @@ import (
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hpke"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -13,6 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"net"
 	"net/http/httptest"
 	"strings"
@@ -62,6 +64,17 @@ type mockFlow struct {
 	client   *est.Client
 	provider *ecdsa.PrivateKey
 	issuer   *x509.Certificate
+	vaultKey *ecdsa.PublicKey // the mock Secret Vault's signature key: the trust anchor of its containers
+}
+
+// flowCEKPub is CEKpub as the request carries it for a P-256 CEK: the DER SubjectPublicKeyInfo.
+func flowCEKPub(t *testing.T, cek *ecdh.PrivateKey) []byte {
+	t.Helper()
+	spki, err := x509.MarshalPKIXPublicKey(cek.PublicKey())
+	if err != nil {
+		t.Fatalf("CEKpub: %v", err)
+	}
+	return spki
 }
 
 func newMockFlow(t *testing.T) *mockFlow {
@@ -141,7 +154,7 @@ func newMockFlow(t *testing.T) *mockFlow {
 	roots.AddCert(caCerts[len(caCerts)-1])
 	host := strings.TrimPrefix(s.URL, "https://")
 	client := &est.Client{Host: host, ExplicitAnchor: roots, HostHeader: "localhost:" + strings.Split(host, ":")[1]}
-	return &mockFlow{client: client, provider: provider, issuer: caCerts[0]}
+	return &mockFlow{client: client, provider: provider, issuer: caCerts[0], vaultKey: attested.VaultSigningKey()}
 }
 
 // handle is the freshness element the Attester binds for kind, after
@@ -210,25 +223,29 @@ func (f *mockFlow) retrieveAs(kind, credentialType string, hint *string, handle,
 // retrieveX509 acquires an x.509 credential by retrieval for the Target of
 // kind, with a CEK of its own, and opens the container; it returns the bundle
 // and the Evidence the request carried.
-func (f *mockFlow) retrieveX509(t *testing.T, kind string, hint *string) (*est.CredentialBundle, []byte) {
+func (f *mockFlow) retrieveX509(t *testing.T, kind string, hint *string) (*est.CredentialBundle, []byte, string) {
 	t.Helper()
 	target := flowRetrieveTarget(kind)
 	cek, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("failed to generate CEK: %v", err)
 	}
-	cekPub := cek.PublicKey().Bytes()
+	cekPub := flowCEKPub(t, cek)
 	handle := f.handle(t, target, est.CredentialTypeX509, kind)
 	evidence := f.evidence(t, kind, handle, target, cekPub)
 	sealed, err := f.retrieveAs(kind, est.CredentialTypeX509, hint, handle, cekPub, evidence)
 	if err != nil {
 		t.Fatalf("retrieval of an x.509 credential: %v", err)
 	}
-	bundle, err := sealed.Open(cek)
+	hintText := ""
+	if hint != nil {
+		hintText = *hint
+	}
+	bundle, err := sealed.Open(cek, cekPub, f.vaultKey, target, handle, hintText)
 	if err != nil {
 		t.Fatalf("container does not open under the CEK: %v", err)
 	}
-	return bundle, evidence
+	return bundle, evidence, sealed.AAD.GroupID
 }
 
 func flowCSR(t *testing.T, commonName string) []byte {
@@ -296,28 +313,58 @@ func TestMockFlowRetrieve(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to generate CEK: %v", err)
 			}
-			cekPub := cek.PublicKey().Bytes()
+			cekPub := flowCEKPub(t, cek)
 			handle := f.handle(t, target, est.CredentialTypeAPIKey, kind)
 			sealed, err := f.retrieve(kind, handle, cekPub, f.evidence(t, kind, handle, target, cekPub))
 			if err != nil {
 				t.Fatalf("retrieval: %v", err)
 			}
-			if sealed.Target != target || !bytes.Equal(sealed.Handle, handle) {
-				t.Fatalf("container for %q with handle %x, want %q with %x", sealed.Target, sealed.Handle, target, handle)
+			if sealed.Container != est.BundleContainerSigned || sealed.Suite != est.BundleSuiteDHKEMP256 {
+				t.Fatalf("container %q with suite %+v, want %q with %+v", sealed.Container, sealed.Suite, est.BundleContainerSigned, est.BundleSuiteDHKEMP256)
 			}
-			bundle, err := sealed.Open(cek)
+			if sealed.AAD.Target != target || !bytes.Equal(sealed.AAD.Handle, handle) {
+				t.Fatalf("container for %q with handle %x, want %q with %x", sealed.AAD.Target, sealed.AAD.Handle, target, handle)
+			}
+			bundle, err := sealed.Open(cek, cekPub, f.vaultKey, target, handle, "")
 			if err != nil {
 				t.Fatalf("container does not open under the CEK: %v", err)
 			}
-			if bundle.GroupID != sealed.GroupID || len(bundle.CredentialItems) == 0 {
-				t.Fatalf("bundle of group %q with %d items, container of group %q", bundle.GroupID, len(bundle.CredentialItems), sealed.GroupID)
+			if sealed.AAD.GroupID == "" || len(bundle.CredentialItems) == 0 {
+				t.Fatalf("bundle with %d items, container of group %q", len(bundle.CredentialItems), sealed.AAD.GroupID)
 			}
 			other, err := ecdh.P256().GenerateKey(rand.Reader)
 			if err != nil {
 				t.Fatalf("failed to generate another CEK: %v", err)
 			}
-			if _, err := sealed.Open(other); err == nil {
+			if _, err := sealed.Open(other, flowCEKPub(t, other), f.vaultKey, target, handle, ""); err == nil {
 				t.Fatal("container opened under another CEK")
+			}
+			otherVault, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatalf("failed to generate another Vault key: %v", err)
+			}
+			if _, err := sealed.Open(cek, cekPub, &otherVault.PublicKey, target, handle, ""); !errors.Is(err, est.ErrBundleSignature) {
+				t.Fatalf("container accepted under another Vault key: %v", err)
+			}
+			if _, err := sealed.Open(cek, cekPub, f.vaultKey, target, []byte("other"), ""); !errors.Is(err, est.ErrBundleAAD) {
+				t.Fatalf("container accepted for another freshness element: %v", err)
+			}
+			// the hybrid suite: an MLKEM768-P256 CEK, carried as its encapsulation key
+			hybrid, err := hpke.MLKEM768P256().GenerateKey()
+			if err != nil {
+				t.Fatalf("failed to generate an MLKEM768-P256 CEK: %v", err)
+			}
+			hybridPub := hybrid.PublicKey().Bytes()
+			handle = f.handle(t, target, est.CredentialTypeAPIKey, kind)
+			sealed, err = f.retrieve(kind, handle, hybridPub, f.evidence(t, kind, handle, target, hybridPub))
+			if err != nil {
+				t.Fatalf("retrieval with an MLKEM768-P256 CEK: %v", err)
+			}
+			if sealed.Suite != est.BundleSuiteMLKEM768P256 || len(sealed.Enc) != 1153 {
+				t.Fatalf("suite %+v with enc of %d octets, want MLKEM768-P256 with 1153", sealed.Suite, len(sealed.Enc))
+			}
+			if _, err := sealed.Open(hybrid, hybridPub, f.vaultKey, target, handle, ""); err != nil {
+				t.Fatalf("the hybrid container does not open under its CEK: %v", err)
 			}
 		})
 	}
@@ -332,11 +379,15 @@ func TestMockFlowRetrieve(t *testing.T) {
 func TestMockFlowRetrieveX509Credential(t *testing.T) {
 	f := newMockFlow(t)
 	kind := est.FreshnessPresentNonce
-	bundle, evidence := f.retrieveX509(t, kind, nil)
+	bundle, evidence, group := f.retrieveX509(t, kind, nil)
 
 	items := map[string][]byte{}
 	for _, item := range bundle.CredentialItems {
-		items[item.Type] = item.Data
+		octets, err := item.Bytes()
+		if err != nil {
+			t.Fatalf("item %q: %v", item.Type, err)
+		}
+		items[item.Type] = octets
 	}
 	if len(items) != flowBundleItems {
 		t.Fatalf("bundle with %d item types, want %d: %v", len(items), flowBundleItems, bundle.CredentialItems)
@@ -418,9 +469,9 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 	}
 
 	// a replica of the workload is given the same credential
-	again, _ := f.retrieveX509(t, kind, nil)
-	if again.GroupID != bundle.GroupID {
-		t.Fatalf("a replica got group %q, the first %q", again.GroupID, bundle.GroupID)
+	again, _, againGroup := f.retrieveX509(t, kind, nil)
+	if againGroup != group {
+		t.Fatalf("a replica got group %q, the first %q", againGroup, group)
 	}
 	if !bytes.Equal(itemOf(again, est.CredentialItemX509Cert), cert.Raw) {
 		t.Fatal("a replica got another certificate")
@@ -428,8 +479,8 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 
 	// another Credential Hint: another group, another certificate
 	hint := flowHint
-	hinted, _ := f.retrieveX509(t, kind, &hint)
-	if hinted.GroupID == bundle.GroupID {
+	hinted, _, hintedGroup := f.retrieveX509(t, kind, &hint)
+	if hintedGroup == group {
 		t.Fatalf("the Credential Hint %q did not make a group of its own", hint)
 	}
 	if bytes.Equal(itemOf(hinted, est.CredentialItemX509Cert), cert.Raw) {
@@ -440,7 +491,8 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 func itemOf(bundle *est.CredentialBundle, typ string) []byte {
 	for _, item := range bundle.CredentialItems {
 		if item.Type == typ {
-			return item.Data
+			octets, _ := item.Bytes()
+			return octets
 		}
 	}
 	return nil
