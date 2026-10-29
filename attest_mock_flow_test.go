@@ -409,6 +409,12 @@ func TestMockFlowCredentialTypeNotServed(t *testing.T) {
 			t.Fatalf("the 406 body names no served Credential Types: %v", err)
 		}
 	}
+	// a Target the server does not serve is a resource it does not have: 404
+	_, err := f.client.InitiateRemoteAttestation(ctx, "https://nobody.example", est.CredentialTypeX509)
+	var notFound est.Error
+	if !errors.As(err, &notFound) || notFound.StatusCode() != http.StatusNotFound {
+		t.Fatalf("attest-initiate for a Target not served: %v, want 404", err)
+	}
 	// a type the initiate did not carry is a mismatch with the attest-initiate: 400
 	target := flowRetrieveTarget(kind)
 	cek, err := ecdh.P256().GenerateKey(rand.Reader)

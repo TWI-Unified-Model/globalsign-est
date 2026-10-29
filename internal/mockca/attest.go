@@ -145,9 +145,11 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 
 	policy, ok := ca.targets[target]
 	if !ok {
+		// A target the EST Server does not serve is a resource it does not have: the query is part of the target URI
+		// (RFC 9110, Section 7.1), so 404 (draft, Error Handling).
 		return TargetPolicy{}, caError{
-			status: http.StatusForbidden,
-			desc:   fmt.Sprintf("target %q is not an allowed target", target),
+			status: http.StatusNotFound,
+			desc:   fmt.Sprintf("target %q is not served", target),
 		}
 	}
 
