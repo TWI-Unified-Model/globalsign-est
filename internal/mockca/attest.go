@@ -87,7 +87,6 @@ type AttestedCA struct {
 
 	targets            map[string]TargetPolicy
 	trustedProviderKey crypto.PublicKey
-	vaultSigner        *ecdsa.PrivateKey // signs the containers the mock Secret Vault releases (attest_bundle.go)
 
 	mu     sync.Mutex
 	nonces map[string]*nonceState
@@ -97,10 +96,6 @@ type AttestedCA struct {
 // NewAttested wraps a MockCA with mock attestation support. If targets is
 // empty, a default enroll target and retrieve target are configured.
 func NewAttested(ca *MockCA, targets []TargetPolicy, trustedProviderKey crypto.PublicKey) *AttestedCA {
-	vaultSigner, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		panic(fmt.Sprintf("mockca: generate the Secret Vault's signature key: %v", err))
-	}
 	policies := make(map[string]TargetPolicy)
 	for _, t := range targets {
 		if t.Name == "" {
@@ -127,7 +122,6 @@ func NewAttested(ca *MockCA, targets []TargetPolicy, trustedProviderKey crypto.P
 		MockCA:             ca,
 		targets:            policies,
 		trustedProviderKey: trustedProviderKey,
-		vaultSigner:        vaultSigner,
 		nonces:             make(map[string]*nonceState),
 		groups:             make(map[string]*est.CredentialBundle),
 	}
@@ -166,9 +160,12 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 			}
 		}
 		if !supported {
+			// Not an authorization matter, a Credential Type this RATS Relying Party does not serve for the Target:
+			// 406, and the body names the ones it serves (draft, Error Handling).
 			return TargetPolicy{}, caError{
-				status: http.StatusForbidden,
-				desc:   fmt.Sprintf("credential type %q is not available for target %q", credentialType, target),
+				status: http.StatusNotAcceptable,
+				desc: fmt.Sprintf("credential type %q is not served for target %q; served: %s",
+					credentialType, target, strings.Join(policy.CredentialTypes, ", ")),
 			}
 		}
 	}
@@ -306,13 +303,13 @@ func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte
 	}
 	if state.target != target {
 		return caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "handle was not issued for this target",
 		}
 	}
 	if state.credentialType != credentialType {
 		return caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "handle was not issued for this credential type",
 		}
 	}
@@ -347,7 +344,7 @@ func (ca *AttestedCA) verifyEvidence(
 	expectedFreshnessKind := policyFreshnessKind(policy)
 	if freshnessKind != expectedFreshnessKind {
 		return nil, caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "freshness kind does not match target policy",
 		}
 	}
@@ -363,7 +360,7 @@ func (ca *AttestedCA) verifyEvidence(
 	// Evidence-to-Freshness binding.
 	if claims.FreshnessKind != freshnessKind {
 		return nil, caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "attestation failed: evidence freshness kind mismatch",
 		}
 	}
@@ -373,7 +370,7 @@ func (ca *AttestedCA) verifyEvidence(
 		if claims.Nonce == nil || claims.Nonce.Len() != 1 ||
 			!bytes.Equal(claims.Nonce.GetI(0), handle) {
 			return nil, caError{
-				status: http.StatusForbidden,
+				status: http.StatusBadRequest,
 				desc:   "attestation failed: evidence not bound to handle",
 			}
 		}
@@ -385,7 +382,7 @@ func (ca *AttestedCA) verifyEvidence(
 		if len(handle) == 0 || claims.Nonce == nil || claims.Nonce.Len() != 1 ||
 			!bytes.Equal(claims.Nonce.GetI(0), handle) {
 			return nil, caError{
-				status: http.StatusForbidden,
+				status: http.StatusBadRequest,
 				desc:   "attestation failed: evidence not bound to epoch marker",
 			}
 		}
@@ -416,7 +413,7 @@ func (ca *AttestedCA) verifyEvidence(
 		issuedAt := time.Unix(claims.IssuedAt, 0)
 		if !stamped.Equal(issuedAt) {
 			return nil, caError{
-				status: http.StatusForbidden,
+				status: http.StatusBadRequest,
 				desc:   "attestation failed: evidence not bound to its timestamp",
 			}
 		}
@@ -454,7 +451,7 @@ func (ca *AttestedCA) verifyEvidence(
 	expectedDigest := est.BindingDigest(handle, target, subject)
 	if !bytes.Equal(claims.BindingDigest, expectedDigest) {
 		return nil, caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "attestation failed: evidence not bound to this server, target or key material",
 		}
 	}
@@ -485,6 +482,13 @@ func (ca *AttestedCA) EnrollCredential(
 ) (*x509.Certificate, error) {
 	if err := ca.requireMechanism(req.Target, req.CredentialType, est.MechanismEnroll); err != nil {
 		return nil, err
+	}
+	switch req.CredentialType {
+	case "", est.CredentialTypeX509:
+	case est.CredentialTypeWIC:
+		return nil, caError{status: http.StatusNotAcceptable, desc: "the draft mints a wic at enrollment, this mock does not yet; served: x509"}
+	default:
+		return nil, caError{status: http.StatusNotAcceptable, desc: fmt.Sprintf("credential type %q is not minted by enrollment; served: x509", req.CredentialType)}
 	}
 
 	if len(req.CSR) == 0 {
@@ -531,21 +535,54 @@ func groupID(res *attestationResults, profile, credentialHint string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// vaultBundle returns the pre-provisioned credential for a group, minting it
-// on first use. Replica workloads sharing a group receive the same credential.
+// vaultBundle returns the pre-provisioned credential of credentialType for a group, minting it on first use. Replica
+// workloads sharing a group receive the same credential. The mock Secret Vault releases x509 (a certificate, its key
+// and the CA chain), api-key and psk; a request that names another Credential Type is refused with 406, as the draft
+// says, and one that names none is given x509.
 func (ca *AttestedCA) vaultBundle(
 	ctx context.Context,
 	gid string,
+	credentialType string,
 	res *attestationResults,
 	aps string,
 	r *http.Request,
 ) (*est.CredentialBundle, error) {
+	if credentialType == "" {
+		credentialType = est.CredentialTypeX509
+	}
+	cacheKey := gid + "|" + credentialType
 	ca.mu.Lock()
-	if bundle, ok := ca.groups[gid]; ok {
+	if bundle, ok := ca.groups[cacheKey]; ok {
 		ca.mu.Unlock()
 		return bundle, nil
 	}
 	ca.mu.Unlock()
+
+	switch credentialType {
+	case est.CredentialTypeX509:
+	case est.CredentialTypeAPIKey, est.CredentialTypePSK:
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return nil, fmt.Errorf("failed to generate a group secret: %w", err)
+		}
+		bundle := &est.CredentialBundle{
+			CredentialItems: []est.CredentialItem{est.NewCredentialItem(credentialType, "raw", secret)},
+			Metadata:        map[string]any{"policy_version": res.PolicyVersion, "target": res.Target},
+		}
+		ca.mu.Lock()
+		if existing, ok := ca.groups[cacheKey]; ok {
+			bundle = existing
+		} else {
+			ca.groups[cacheKey] = bundle
+		}
+		ca.mu.Unlock()
+		return bundle, nil
+	default:
+		return nil, caError{
+			status: http.StatusNotAcceptable,
+			desc:   fmt.Sprintf("credential type %q is not released by this Secret Vault; served: x509, api-key, psk", credentialType),
+		}
+	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -600,10 +637,10 @@ func (ca *AttestedCA) vaultBundle(
 	}
 
 	ca.mu.Lock()
-	if existing, ok := ca.groups[gid]; ok {
+	if existing, ok := ca.groups[cacheKey]; ok {
 		bundle = existing
 	} else {
-		ca.groups[gid] = bundle
+		ca.groups[cacheKey] = bundle
 	}
 	ca.mu.Unlock()
 
@@ -644,14 +681,12 @@ func (ca *AttestedCA) RetrieveCredential(
 
 	gid := groupID(res, req.Profile, credentialHint)
 
-	bundle, err := ca.vaultBundle(ctx, gid, res, aps, r)
+	bundle, err := ca.vaultBundle(ctx, gid, req.CredentialType, res, aps, r)
 	if err != nil {
 		return nil, err
 	}
 
-	sealed, err := est.SealCredentialBundle(
-		bundle, gid, req.CEKPub, req.Handle, req.Target, credentialHint, ca.vaultSigner,
-	)
+	sealed, err := est.SealCredentialBundle(bundle, gid, req.CEKPub, req.Handle, req.Target, credentialHint)
 	if err != nil {
 		return nil, caError{
 			status: http.StatusBadRequest,
@@ -660,10 +695,4 @@ func (ca *AttestedCA) RetrieveCredential(
 	}
 
 	return sealed, nil
-}
-
-// VaultSigningKey is the public half of the key the mock Secret Vault signs its containers with: the trust anchor an
-// Attester holds for the retrieve Targets of this CA.
-func (ca *AttestedCA) VaultSigningKey() *ecdsa.PublicKey {
-	return &ca.vaultSigner.PublicKey
 }

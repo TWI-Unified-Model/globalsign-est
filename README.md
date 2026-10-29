@@ -141,7 +141,7 @@ Relying Party expects, in one of two modes.
 |---|---|---|
 | `/.well-known/est/attest-initiate` | `GET`, query `target` and `credential_type`; `Accept: application/est-attest-initiate+json` | the Freshness Kind of the Target, a Handle when the kind is `present-*`, the acceptable Evidence formats and key algorithms |
 | `/.well-known/est/attest-enroll` | `POST application/est-attest-enroll+json`: a CSR and Evidence bound to it | the certificate, `application/pkcs7-mime` base64 (as simpleenroll) |
-| `/.well-known/est/attest-retrieve` | `POST application/est-attest-retrieve+json`: a CEK public key and Evidence bound to it | `application/est-attest-bundle+json`: the credential in a container sealed to the CEK (`hpke-base`, HPKE in base mode under DHKEM(P-256) or MLKEM768-P256, the suite following the encoding of CEKpub), with the Secret Vault's signature in its `origin` member where the Target requires origin authentication (the mock signs for every Target) |
+| `/.well-known/est/attest-retrieve` | `POST application/est-attest-retrieve+json`: a CEK public key and Evidence bound to it | `application/est-attest-bundle+json`: the credential in a container sealed to the CEK (`hpke-base`, HPKE in base mode under DHKEM(P-256) or MLKEM768-P256, the suite following the encoding of CEKpub)) |
 
 Every request is checked against the draft's syntax before anything else
 (`attest_syntax.go`); a request the draft does not describe is refused
@@ -180,15 +180,21 @@ leg of an acquisition is a `GET`:
         "https://localhost:8443/.well-known/est/attest-initiate?target=https://ledger.example&credential_type=x509"
     {"freshness_kind":"absent-timestamp","max_age":120,"acceptable_evidence":["application/eat+cwt; eat_profile=\"https://twi.confidentialcomputing.io/tacra-est-mock/1.0.0\""],"acceptable_cek":["MLKEM768-P256+HKDF-SHA256+AES-256-GCM","DHKEM(P-256, HKDF-SHA256)+HKDF-SHA256+AES-256-GCM"],"mode":"retrieve"}
 
-A Target the configuration does not name is refused with 403. The second
-leg needs Evidence: the library makes the mock TEE's (`est.NewMockEvidence`,
+A Target the configuration does not name is refused with 403, and a
+`credential_type` its policy does not list with 406, the body naming the
+ones it serves, as the draft says. A request that names no `credential_type`
+takes what the policy gives: x509 at enrollment, x509 at retrieval. Named,
+the type is released or refused: the mock Secret Vault releases `x509` (a
+certificate, its key and the CA chain), `api-key` and `psk`; it does not mint
+a `wic` at enrollment yet, which the draft allows. The second leg needs
+Evidence: the library makes the mock TEE's (`est.NewMockEvidence`,
 signed with `provider.key`) and the client sends it (`est.Client`'s
 `InitiateRemoteAttestation`, `EnrollCredential` and `RetrieveCredential`).
 `attest_mock_flow_test.go` runs the whole path through the wire, for every
 Freshness Kind, in Enrollment and in Retrieval, with the refusals a changed
-input meets, and opens the Retrieval container under the Secret Vault's signature,
-and without it where no Vault key is held, to check the certificate, its key and
-the CA chain it releases, under either suite:
+input meets, and opens the Retrieval container, whoever sealed it (the
+profile carries no origin authentication, its accepted risk), to check the
+certificate, its key and the CA chain it releases, under either suite:
 
     user@host:$ go test -run TestMockFlow .
     ok      github.com/globalsign/est       0.438s

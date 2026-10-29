@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -64,7 +65,6 @@ type mockFlow struct {
 	client   *est.Client
 	provider *ecdsa.PrivateKey
 	issuer   *x509.Certificate
-	vaultKey *ecdsa.PublicKey // the mock Secret Vault's signature key: the trust anchor of its containers
 }
 
 // flowCEKPub is CEKpub as the request carries it for a P-256 CEK: the DER SubjectPublicKeyInfo.
@@ -154,7 +154,7 @@ func newMockFlow(t *testing.T) *mockFlow {
 	roots.AddCert(caCerts[len(caCerts)-1])
 	host := strings.TrimPrefix(s.URL, "https://")
 	client := &est.Client{Host: host, ExplicitAnchor: roots, HostHeader: "localhost:" + strings.Split(host, ":")[1]}
-	return &mockFlow{client: client, provider: provider, issuer: caCerts[0], vaultKey: attested.VaultSigningKey()}
+	return &mockFlow{client: client, provider: provider, issuer: caCerts[0]}
 }
 
 // handle is the freshness element the Attester binds for kind, after
@@ -241,7 +241,7 @@ func (f *mockFlow) retrieveX509(t *testing.T, kind string, hint *string) (*est.C
 	if hint != nil {
 		hintText = *hint
 	}
-	bundle, err := sealed.Open(cek, cekPub, f.vaultKey, target, handle, hintText)
+	bundle, err := sealed.Open(cek, cekPub, target, handle, hintText)
 	if err != nil {
 		t.Fatalf("container does not open under the CEK: %v", err)
 	}
@@ -303,7 +303,9 @@ func TestMockFlowEnroll(t *testing.T) {
 
 // TestMockFlowRetrieve: for every Freshness Kind, the container is sealed to
 // the CEK the request carried, names the Target and the handle it was made
-// for, and opens under no other key.
+// for, opens under no other key, and releases the Credential Type the request
+// named. A container anyone else sealed to the same CEK opens too: the
+// profile carries no origin authentication, its accepted risk.
 func TestMockFlowRetrieve(t *testing.T) {
 	f := newMockFlow(t)
 	for _, kind := range flowKinds {
@@ -322,48 +324,47 @@ func TestMockFlowRetrieve(t *testing.T) {
 			if sealed.Container != est.BundleContainer || sealed.Suite != est.BundleSuiteDHKEMP256 {
 				t.Fatalf("container %q with suite %+v, want %q with %+v", sealed.Container, sealed.Suite, est.BundleContainer, est.BundleSuiteDHKEMP256)
 			}
-			if sealed.Origin == nil || sealed.Origin.Alg != est.BundleOriginAlg {
-				t.Fatalf("the mock Secret Vault's container carries no origin member: %+v", sealed.Origin)
-			}
 			if sealed.AAD.Target != target || !bytes.Equal(sealed.AAD.Handle, handle) {
 				t.Fatalf("container for %q with handle %x, want %q with %x", sealed.AAD.Target, sealed.AAD.Handle, target, handle)
 			}
-			bundle, err := sealed.Open(cek, cekPub, f.vaultKey, target, handle, "")
+			bundle, err := sealed.Open(cek, cekPub, target, handle, "")
 			if err != nil {
 				t.Fatalf("container does not open under the CEK: %v", err)
 			}
-			if sealed.AAD.GroupID == "" || len(bundle.CredentialItems) == 0 {
-				t.Fatalf("bundle with %d items, container of group %q", len(bundle.CredentialItems), sealed.AAD.GroupID)
+			if sealed.AAD.GroupID == "" || len(bundle.CredentialItems) != 1 || bundle.CredentialItems[0].Type != est.CredentialTypeAPIKey {
+				t.Fatalf("bundle %+v, container of group %q: want one api-key item", bundle.CredentialItems, sealed.AAD.GroupID)
 			}
 			other, err := ecdh.P256().GenerateKey(rand.Reader)
 			if err != nil {
 				t.Fatalf("failed to generate another CEK: %v", err)
 			}
-			if _, err := sealed.Open(other, flowCEKPub(t, other), f.vaultKey, target, handle, ""); err == nil {
+			if _, err := sealed.Open(other, flowCEKPub(t, other), target, handle, ""); err == nil {
 				t.Fatal("container opened under another CEK")
 			}
-			otherVault, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			if err != nil {
-				t.Fatalf("failed to generate another Vault key: %v", err)
-			}
-			if _, err := sealed.Open(cek, cekPub, &otherVault.PublicKey, target, handle, ""); !errors.Is(err, est.ErrBundleSignature) {
-				t.Fatalf("container accepted under another Vault key: %v", err)
-			}
-			if _, err := sealed.Open(cek, cekPub, f.vaultKey, target, []byte("other"), ""); !errors.Is(err, est.ErrBundleAAD) {
+			if _, err := sealed.Open(cek, cekPub, target, []byte("other"), ""); !errors.Is(err, est.ErrBundleAAD) {
 				t.Fatalf("container accepted for another freshness element: %v", err)
 			}
-			// the origin member is the Target's policy: stripped, the container is refused where the Attester holds
-			// the Vault's key, and opens where it holds none (the profile's accepted risk)
-			stripped := *sealed
-			stripped.Origin = nil
-			if _, err := stripped.Open(cek, cekPub, f.vaultKey, target, handle, ""); !errors.Is(err, est.ErrBundleOrigin) {
-				t.Fatalf("container without its origin member accepted with a Vault key held: %v", err)
+			// the suite member must be one the profile sets, and the one CEKpub's encoding names
+			wrongSuite := *sealed
+			wrongSuite.Suite = est.BundleSuiteMLKEM768P256
+			if _, err := wrongSuite.Open(cek, cekPub, target, handle, ""); !errors.Is(err, est.ErrBundleContainer) {
+				t.Fatalf("container with another suite member accepted: %v", err)
 			}
-			if _, err := stripped.Open(cek, cekPub, nil, target, handle, ""); err != nil {
-				t.Fatalf("container without its origin member refused with no Vault key held: %v", err)
+			// the accepted risk of the profile: the EST client or server saw CEKpub and can seal a container of
+			// its own to it, which opens, and the Attester cannot tell who sealed it
+			planted := &est.CredentialBundle{CredentialItems: []est.CredentialItem{
+				est.NewCredentialItem(est.CredentialTypeAPIKey, "raw", []byte("the intermediary's key")),
+			}}
+			substituted, err := est.SealCredentialBundle(planted, "another-group", cekPub, handle, target, "")
+			if err != nil {
+				t.Fatalf("sealing a container as the intermediary: %v", err)
 			}
-			if _, err := sealed.Open(cek, cekPub, nil, target, handle, ""); err != nil {
-				t.Fatalf("signed container refused with no Vault key held: %v", err)
+			got, err := substituted.Open(cek, cekPub, target, handle, "")
+			if err != nil {
+				t.Fatalf("the intermediary's container does not open, but the profile accepts that it does: %v", err)
+			}
+			if len(got.CredentialItems) != 1 || got.CredentialItems[0].Value != planted.CredentialItems[0].Value {
+				t.Fatalf("the intermediary's container opened to %+v", got.CredentialItems)
 			}
 			// the hybrid suite: an MLKEM768-P256 CEK, carried as its encapsulation key
 			hybrid, err := hpke.MLKEM768P256().GenerateKey()
@@ -379,10 +380,47 @@ func TestMockFlowRetrieve(t *testing.T) {
 			if sealed.Suite != est.BundleSuiteMLKEM768P256 || len(sealed.Enc) != 1153 {
 				t.Fatalf("suite %+v with enc of %d octets, want MLKEM768-P256 with 1153", sealed.Suite, len(sealed.Enc))
 			}
-			if _, err := sealed.Open(hybrid, hybridPub, f.vaultKey, target, handle, ""); err != nil {
+			if _, err := sealed.Open(hybrid, hybridPub, target, handle, ""); err != nil {
 				t.Fatalf("the hybrid container does not open under its CEK: %v", err)
 			}
 		})
+	}
+}
+
+// TestMockFlowCredentialTypeNotServed: a credential_type the RATS Relying
+// Party does not serve for the Target is refused with 406, at attest-initiate
+// and on the second leg alike, and the body names the ones it serves; a wic,
+// which the draft mints at enrollment, this mock does not mint yet.
+func TestMockFlowCredentialTypeNotServed(t *testing.T) {
+	f := newMockFlow(t)
+	kind := est.FreshnessPresentNonce
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	for _, c := range []struct{ target, credentialType string }{
+		{flowEnrollTarget(kind), est.CredentialTypeWIC},
+		{flowRetrieveTarget(kind), est.CredentialTypePSK},
+	} {
+		_, err := f.client.InitiateRemoteAttestation(ctx, c.target, c.credentialType)
+		var estErr est.Error
+		if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusNotAcceptable {
+			t.Fatalf("attest-initiate for %s with %s: %v, want 406", c.target, c.credentialType, err)
+		}
+		if !strings.Contains(err.Error(), "served:") {
+			t.Fatalf("the 406 body names no served Credential Types: %v", err)
+		}
+	}
+	// a type the initiate did not carry is a mismatch with the attest-initiate: 400
+	target := flowRetrieveTarget(kind)
+	cek, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate CEK: %v", err)
+	}
+	cekPub := flowCEKPub(t, cek)
+	handle := f.handle(t, target, est.CredentialTypeAPIKey, kind)
+	_, err = f.retrieveAs(kind, est.CredentialTypeX509, nil, handle, cekPub, f.evidence(t, kind, handle, target, cekPub))
+	var estErr est.Error
+	if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("attest-retrieve with a credential_type its attest-initiate did not carry: %v, want 400", err)
 	}
 }
 

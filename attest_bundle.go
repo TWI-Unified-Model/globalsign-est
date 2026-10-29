@@ -1,11 +1,10 @@
 package est
 
 // The EncryptedCredentialBundle of the EST profile (draft-novak-lamps-tacra-est, Response: EncryptedCredentialBundle;
-// issue #15 of the draft, 28 October 2026), as TACRA's "Sealing the Released Credential" constructs it: HPKE in base
-// mode (RFC 9180) to CEKpub, under one of two suites, and, where the Target requires origin authentication, the Secret
-// Vault's ECDSA P-256 signature over the suite, CEKpub, info, the associated data, the encapsulated key and the
-// ciphertext, in the container's origin member. The EST client and server saw CEKpub and could seal a container to it
-// themselves: without the origin member that is the profile's accepted risk, with it the signature refuses them.
+// issue #15 of the draft, 28 and 29 October 2026), as TACRA's "Sealing the Released Credential" constructs it: HPKE in
+// base mode (RFC 9180) to CEKpub, under one of two suites. The EST client and server saw CEKpub and could seal a
+// container to it themselves: the profile accepts that risk, states it in its Security Considerations, and carries no
+// origin authentication in this version.
 //
 //	suites        MLKEM768-P256 (HPKE KEM 0x0050, draft-ietf-hpke-pq) or DHKEM(P-256, HKDF-SHA256) (0x0010), each with
 //	              HKDF-SHA256 (0x0001) and AES-256-GCM (0x0002); the suite follows the encoding of CEKpub
@@ -13,9 +12,6 @@ package est
 //	info          len32-prefixed: "tacra-est bundle v1", the Target, the freshness element
 //	aad           the JSON Canonicalization Scheme (RFC 8785) of {group_id, target, handle?, credential_hint?}
 //	plaintext     the JCS of the CredentialBundle
-//	origin        {alg: "ECDSA-P256-SHA256", signature}: ECDSA P-256 over the SHA-256 of the len32-prefixed
-//	              "tacra-est bundle signature v1", the HPKE suite_id, "ECDSA-P256-SHA256", CEKpub as carried, info,
-//	              aad, enc, ciphertext; the signature DER-encoded (ECDSA-Sig-Value)
 
 import (
 	"bytes"
@@ -24,8 +20,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hpke"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
 	"encoding/json"
@@ -37,21 +31,11 @@ import (
 // BundleContainer names the container of the EST profile.
 const BundleContainer = "hpke-base"
 
-// BundleOriginAlg names the origin member's signature algorithm, in the member and among the signed octets alike.
-const BundleOriginAlg = "ECDSA-P256-SHA256"
-
 // BundleSuite names the HPKE algorithms of a container, as its suite member carries them.
 type BundleSuite struct {
 	KEM  string `json:"kem"`
 	KDF  string `json:"kdf"`
 	AEAD string `json:"aead"`
-}
-
-// BundleOrigin is the Secret Vault's authentication of itself as the origin of a container: the name of the signature
-// algorithm and the signature.
-type BundleOrigin struct {
-	Alg       string `json:"alg"`
-	Signature B64URL `json:"signature"`
 }
 
 // The two suites of the container, and their names in acceptable_cek.
@@ -74,20 +58,15 @@ type BundleAAD struct {
 }
 
 // EncryptedCredentialBundle is the container the Secret Vault returns and the EST server forwards without reading it.
-// Origin is present where the Target requires origin authentication.
 type EncryptedCredentialBundle struct {
-	Container  string        `json:"container"`
-	Suite      BundleSuite   `json:"suite"`
-	Enc        B64URL        `json:"enc"`
-	Ciphertext B64URL        `json:"ciphertext"`
-	AAD        BundleAAD     `json:"aad"`
-	Origin     *BundleOrigin `json:"origin,omitempty"`
+	Container  string      `json:"container"`
+	Suite      BundleSuite `json:"suite"`
+	Enc        B64URL      `json:"enc"`
+	Ciphertext B64URL      `json:"ciphertext"`
+	AAD        BundleAAD   `json:"aad"`
 }
 
-const (
-	bundleInfoLabel = "tacra-est bundle v1"
-	bundleSigLabel  = "tacra-est bundle signature v1"
-)
+const bundleInfoLabel = "tacra-est bundle v1"
 
 type bundleSuite struct {
 	suite BundleSuite
@@ -146,16 +125,6 @@ func bundleLP(b []byte, parts ...[]byte) []byte {
 // BundleInfo is the HPKE info of the container.
 func BundleInfo(target string, freshness []byte) []byte {
 	return bundleLP(nil, []byte(bundleInfoLabel), []byte(target), freshness)
-}
-
-// BundleToBeSigned is what the Secret Vault signs.
-func BundleToBeSigned(suite BundleSuite, cekPub, info, aad, enc, ct []byte) ([]byte, error) {
-	for _, s := range bundleSuites {
-		if s.suite == suite {
-			return bundleLP(nil, []byte(bundleSigLabel), s.id, []byte(BundleOriginAlg), cekPub, info, aad, enc, ct), nil
-		}
-	}
-	return nil, fmt.Errorf("unknown suite %+v", suite)
 }
 
 // CanonicalJSON is the JSON Canonicalization Scheme (RFC 8785) of v, for the values a bundle carries: object keys
@@ -257,16 +226,14 @@ func writeCanonicalString(buf *bytes.Buffer, s string) {
 }
 
 // SealCredentialBundle seals bundle to CEKpub under the suite CEKpub's encoding names, with the group, the Target,
-// the freshness element and the Credential Hint in the associated data, and, with signer, signs the result into the
-// origin member. Without signer the container carries no origin member: the Target does not require origin
-// authentication, the profile's accepted risk.
+// the freshness element and the Credential Hint in the associated data. Anyone who saw CEKpub can seal a container to
+// it: the container carries no origin authentication, which is the profile's accepted risk.
 func SealCredentialBundle(
 	bundle *CredentialBundle,
 	groupID string,
 	cekPub []byte,
 	handle []byte,
 	target, credentialHint string,
-	signer *ecdsa.PrivateKey,
 ) (*EncryptedCredentialBundle, error) {
 	s, pk, err := bundleSuiteOf(cekPub)
 	if err != nil {
@@ -291,20 +258,7 @@ func SealCredentialBundle(
 	if err != nil {
 		return nil, fmt.Errorf("failed to seal credential bundle: %w", err)
 	}
-	out := &EncryptedCredentialBundle{Container: BundleContainer, Suite: s.suite, Enc: enc, Ciphertext: ct, AAD: aad}
-	if signer != nil {
-		tbs, err := BundleToBeSigned(s.suite, cekPub, info, aadBytes, enc, ct)
-		if err != nil {
-			return nil, err
-		}
-		digest := sha256.Sum256(tbs)
-		sig, err := ecdsa.SignASN1(rand.Reader, signer, digest[:])
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign credential bundle: %w", err)
-		}
-		out.Origin = &BundleOrigin{Alg: BundleOriginAlg, Signature: sig}
-	}
-	return out, nil
+	return &EncryptedCredentialBundle{Container: BundleContainer, Suite: s.suite, Enc: enc, Ciphertext: ct, AAD: aad}, nil
 }
 
 // CEKPrivateKey is a CEK as the HPKE recipient takes it: the MLKEM768-P256 key itself, or a P-256 key as ECDSA or
@@ -329,19 +283,14 @@ func CEKPrivateKey(k crypto.PrivateKey) (hpke.PrivateKey, error) {
 var (
 	ErrBundleContainer = errors.New("not the hpke-base container, or not one of its suites")
 	ErrBundleAAD       = errors.New("the associated data does not name what the Evidence bound")
-	ErrBundleSignature = errors.New("not signed by the trusted Secret Vault key over this request's bundle")
-	ErrBundleOrigin    = errors.New("origin authentication required, and the container carries none")
 )
 
-// Open checks the container, its suite and the associated data against what the Attester bound, then the origin
-// member as the Attester's policy for the Target says, then decrypts under the CEK. The policy is vaultKey: the Secret
-// Vault's signature key the Attester holds for the Target, under which the origin member must be present and verify;
-// nil, and the container opens as it is, whoever sealed it, which is the profile's accepted risk. cekPub is CEKpub
-// as the request carried it.
+// Open checks the container, its suite and the associated data against what the Attester bound, then decrypts under
+// the CEK. Who sealed the container it cannot tell: a container anyone sealed to CEKpub opens, which is the profile's
+// accepted risk (Security Considerations of the draft). cekPub is CEKpub as the request carried it.
 func (b *EncryptedCredentialBundle) Open(
 	cekPriv crypto.PrivateKey,
 	cekPub []byte,
-	vaultKey *ecdsa.PublicKey,
 	target string,
 	handle []byte,
 	credentialHint string,
@@ -357,18 +306,9 @@ func (b *EncryptedCredentialBundle) Open(
 	if err != nil {
 		return nil, err
 	}
-	if vaultKey != nil {
-		if b.Origin == nil {
-			return nil, ErrBundleOrigin
-		}
-		tbs, err := BundleToBeSigned(b.Suite, cekPub, info, aadBytes, b.Enc, b.Ciphertext)
-		if err != nil {
-			return nil, ErrBundleContainer
-		}
-		digest := sha256.Sum256(tbs)
-		if b.Origin.Alg != BundleOriginAlg || !ecdsa.VerifyASN1(vaultKey, digest[:], b.Origin.Signature) {
-			return nil, ErrBundleSignature
-		}
+	// the suite: one the profile sets, and the one CEKpub's encoding names
+	if s, _, err := bundleSuiteOf(cekPub); err != nil || b.Suite != s.suite {
+		return nil, ErrBundleContainer
 	}
 	cek, err := CEKPrivateKey(cekPriv)
 	if err != nil {
