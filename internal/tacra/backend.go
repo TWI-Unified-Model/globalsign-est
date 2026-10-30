@@ -377,10 +377,10 @@ func (b *Backend) correlateKey(kind, key, target, credentialType string) error {
 		}
 	}
 	if live == 0 {
-		return fail(http.StatusConflict, "no attest-initiate returned this Handle, or it expired")
+		return fail(http.StatusBadRequest, "no attest-initiate returned this Handle, or it expired")
 	}
 	if match < 0 {
-		return fail(http.StatusForbidden, "Target, Credential Type or Freshness Kind differ from the attest-initiate")
+		return fail(http.StatusBadRequest, "Target, Credential Type or Freshness Kind differ from the attest-initiate")
 	}
 	if kind == est.FreshnessPresentNonce { // single use
 		ss := b.sessions[key]

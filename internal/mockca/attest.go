@@ -280,8 +280,8 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 	return resp, nil
 }
 
-// consumeHandle validates and burns a present-nonce Handle. A replayed or
-// expired Handle yields 409 Conflict.
+// consumeHandle validates and burns a present-nonce Handle. A replayed, expired or
+// never issued Handle yields 400 Bad Request, as the draft says.
 func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte) error {
 	if len(handle) == 0 {
 		return caError{
@@ -295,13 +295,13 @@ func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte
 
 	state, ok := ca.nonces[hex.EncodeToString(handle)]
 	if !ok {
-		return caError{status: http.StatusConflict, desc: "unknown handle"}
+		return caError{status: http.StatusBadRequest, desc: "unknown handle"}
 	}
 	if state.used {
-		return caError{status: http.StatusConflict, desc: "handle replay detected"}
+		return caError{status: http.StatusBadRequest, desc: "handle replay detected"}
 	}
 	if time.Now().After(state.expires) {
-		return caError{status: http.StatusConflict, desc: "handle has expired"}
+		return caError{status: http.StatusBadRequest, desc: "handle has expired"}
 	}
 	if state.target != target {
 		return caError{
@@ -390,7 +390,7 @@ func (ca *AttestedCA) verifyEvidence(
 		}
 		if !bytes.Equal(handle, []byte(policy.EpochMarker)) {
 			return nil, caError{
-				status: http.StatusConflict,
+				status: http.StatusBadRequest,
 				desc:   "epoch marker has moved",
 			}
 		}
