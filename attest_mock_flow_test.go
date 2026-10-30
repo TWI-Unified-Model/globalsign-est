@@ -13,7 +13,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"net"
 	"net/http"
@@ -43,7 +42,6 @@ const (
 	flowServerCN    = "mock flow EST server"
 	flowRateLimit   = 1000
 	flowHint        = "payments" // a Credential Hint, for a credential group of its own
-	flowBundleItems = 3          // the mock Secret Vault's bundle: certificate, key, CA chain
 )
 
 var flowKinds = []string{
@@ -353,7 +351,7 @@ func TestMockFlowRetrieve(t *testing.T) {
 			// the accepted risk of the profile: the EST client or server saw CEKpub and can seal a container of
 			// its own to it, which opens, and the Attester cannot tell who sealed it
 			planted := &est.CredentialBundle{CredentialItems: []est.CredentialItem{
-				est.NewCredentialItem(est.CredentialTypeAPIKey, "raw", []byte("the intermediary's key")),
+				est.NewCredentialItem(est.CredentialTypeAPIKey, []byte("the intermediary's key")),
 			}}
 			substituted, err := est.SealCredentialBundle(planted, "another-group", cekPub, handle, target, "")
 			if err != nil {
@@ -441,25 +439,36 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 	kind := est.FreshnessPresentNonce
 	bundle, evidence, group := f.retrieveX509(t, kind, nil)
 
-	items := map[string][]byte{}
+	// the items, typed with the draft's Credential Type tokens: the certificate (x509), its private key (private-key)
+	// and the CA chain (x509 items with the purpose "ca"), every value the base64url of the credential's octets
+	var leaf, keyDER []byte
+	var chain []*x509.Certificate
 	for _, item := range bundle.CredentialItems {
 		octets, err := item.Bytes()
 		if err != nil {
 			t.Fatalf("item %q: %v", item.Type, err)
 		}
-		items[item.Type] = octets
-	}
-	if len(items) != flowBundleItems {
-		t.Fatalf("bundle with %d item types, want %d: %v", len(items), flowBundleItems, bundle.CredentialItems)
-	}
-	for _, typ := range []string{est.CredentialItemX509Cert, est.CredentialItemPKCS8Key, est.CredentialItemCACertsPEM} {
-		if len(items[typ]) == 0 {
-			t.Fatalf("bundle without a %q item", typ)
+		switch {
+		case item.Type == est.CredentialTypeX509 && len(item.Purpose) == 0:
+			leaf = octets
+		case item.Type == est.CredentialTypeX509 && len(item.Purpose) == 1 && item.Purpose[0] == "ca":
+			c, err := x509.ParseCertificate(octets)
+			if err != nil {
+				t.Fatalf("CA chain: %v", err)
+			}
+			chain = append(chain, c)
+		case item.Type == est.CredentialTypePrivateKey:
+			keyDER = octets
+		default:
+			t.Fatalf("an item the mock Secret Vault does not release: %+v", item)
 		}
+	}
+	if len(leaf) == 0 || len(keyDER) == 0 || len(chain) == 0 {
+		t.Fatalf("bundle without the certificate, its key or the CA chain: %v", bundle.CredentialItems)
 	}
 
 	// the certificate: issued to the attested workload, by the mock CA
-	cert, err := x509.ParseCertificate(items[est.CredentialItemX509Cert])
+	cert, err := x509.ParseCertificate(leaf)
 	if err != nil {
 		t.Fatalf("certificate: %v", err)
 	}
@@ -472,22 +481,6 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 		t.Fatalf("certificate for %q, want the attested workload %q", cert.Subject.CommonName, attested)
 	}
 	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
-	var chain []*x509.Certificate
-	for rest := items[est.CredentialItemCACertsPEM]; len(rest) > 0; {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		c, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			t.Fatalf("CA chain: %v", err)
-		}
-		chain = append(chain, c)
-	}
-	if len(chain) == 0 {
-		t.Fatal("bundle without a CA chain")
-	}
 	roots.AddCert(chain[len(chain)-1])
 	for _, c := range chain[:len(chain)-1] {
 		intermediates.AddCert(c)
@@ -500,7 +493,7 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 	}
 
 	// the key: the private key of the certificate, able to sign
-	parsed, err := x509.ParsePKCS8PrivateKey(items[est.CredentialItemPKCS8Key])
+	parsed, err := x509.ParsePKCS8PrivateKey(keyDER)
 	if err != nil {
 		t.Fatalf("private key: %v", err)
 	}
@@ -533,7 +526,7 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 	if againGroup != group {
 		t.Fatalf("a replica got group %q, the first %q", againGroup, group)
 	}
-	if !bytes.Equal(itemOf(again, est.CredentialItemX509Cert), cert.Raw) {
+	if !bytes.Equal(leafOf(again), cert.Raw) {
 		t.Fatal("a replica got another certificate")
 	}
 
@@ -543,14 +536,16 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 	if hintedGroup == group {
 		t.Fatalf("the Credential Hint %q did not make a group of its own", hint)
 	}
-	if bytes.Equal(itemOf(hinted, est.CredentialItemX509Cert), cert.Raw) {
+	if bytes.Equal(leafOf(hinted), cert.Raw) {
 		t.Fatal("the hinted group got the first group's certificate")
 	}
 }
 
-func itemOf(bundle *est.CredentialBundle, typ string) []byte {
+// leafOf is the certificate of a released x509 bundle: the x509 item that carries no purpose, where the CA chain's
+// carry "ca".
+func leafOf(bundle *est.CredentialBundle) []byte {
 	for _, item := range bundle.CredentialItems {
-		if item.Type == typ {
+		if item.Type == est.CredentialTypeX509 && len(item.Purpose) == 0 {
 			octets, _ := item.Bytes()
 			return octets
 		}

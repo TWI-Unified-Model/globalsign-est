@@ -106,12 +106,10 @@ const (
 	mockClaimBindingDigest int64 = -70005
 )
 
-// Credential item types carried inside an EncryptedCredentialBundle.
-const (
-	CredentialItemX509Cert   = "x509-cert"
-	CredentialItemPKCS8Key   = "pkcs8-key"
-	CredentialItemCACertsPEM = "ca-certs-pem"
-)
+// CredentialTypePrivateKey is the Credential Type of a private key shared by the instances of a replicated service,
+// released by Retrieval only (the draft, Credential Type Tokens). A credential item in the released bundle carries
+// one of the Credential Type tokens as its type.
+const CredentialTypePrivateKey = "private-key"
 
 // AttestationCA is an optional interface which a CA backing an EST server may
 // implement in order to support attested credential acquisition. A backing CA
@@ -188,16 +186,21 @@ type AttestedRetrievalRequest struct {
 }
 
 // CredentialItem is a single credential inside a decrypted bundle, the credential-item of the EST draft's CDDL: its
-// type, its value as text, and the format of the octets the value carries ("der", "pkcs8" or "pem" here).
+// type, a Credential Type token, and its value, the unpadded base64url of the credential's octets: a DER certificate
+// for x509 and wic, a DER PrivateKeyInfo for private-key, the key octets for psk, the UTF-8 of the token for wit, jwt
+// and api-key (the draft, Response: EncryptedCredentialBundle, 30 October 2026). Format names another encoding of
+// those octets when the Secret Vault's policy uses one; Purpose is one of the key-block attributes the policy sets,
+// here "ca" on a certificate of the chain.
 type CredentialItem struct {
-	Type   string `json:"type"`
-	Format string `json:"format,omitempty"`
-	Value  string `json:"value"`
+	Type    string   `json:"type"`
+	Format  string   `json:"format,omitempty"`
+	Value   string   `json:"value"`
+	Purpose []string `json:"purpose,omitempty"`
 }
 
-// NewCredentialItem is an item whose value is the unpadded base64url encoding of octets.
-func NewCredentialItem(typ, format string, octets []byte) CredentialItem {
-	return CredentialItem{Type: typ, Format: format, Value: base64.RawURLEncoding.EncodeToString(octets)}
+// NewCredentialItem is an item of Credential Type typ whose value is the unpadded base64url encoding of octets.
+func NewCredentialItem(typ string, octets []byte) CredentialItem {
+	return CredentialItem{Type: typ, Value: base64.RawURLEncoding.EncodeToString(octets)}
 }
 
 // Bytes returns the octets an item's value carries.

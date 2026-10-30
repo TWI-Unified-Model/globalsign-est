@@ -184,9 +184,13 @@ A Target the configuration does not name is refused with 404, and a
 `credential_type` its policy does not list with 406, the body naming the
 ones it serves, as the draft says. A request that names no `credential_type`
 takes what the policy gives: x509 at enrollment, x509 at retrieval. Named,
-the type is released or refused: the mock Secret Vault releases `x509` (a
-certificate, its key and the CA chain), `api-key` and `psk`; it does not mint
-a `wic` at enrollment yet, which the draft allows. The second leg needs
+the type is released or refused: the mock Secret Vault releases `x509` (the
+certificate as an `x509` item, its key as a `private-key` item, the CA chain
+as `x509` items with the purpose `ca`), `api-key` (a hex token) and `psk`;
+every item's value is the unpadded base64url of the credential's octets, as
+the draft says. It does not mint a `wic` at enrollment yet, which the draft
+allows. A request to the resource of the other mode, `attest-enroll` for a
+Target provisioned by retrieval, is refused with 400. The second leg needs
 Evidence: the library makes the mock TEE's (`est.NewMockEvidence`,
 signed with `provider.key`) and the client sends it (`est.Client`'s
 `InitiateRemoteAttestation`, `EnrollCredential` and `RetrieveCredential`).

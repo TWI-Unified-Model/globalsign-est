@@ -26,7 +26,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -175,8 +174,10 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 	return policy, nil
 }
 
-// requireMechanism rejects a second-leg request that does not match the
-// mechanism the CAS selected for the target.
+// requireMechanism rejects a second-leg request to the resource of the other
+// mode: a Target the CAS provisions by retrieve is served by a Secret Vault, one
+// it provisions by enroll by a Credential Authority, and a request to the other
+// resource is refused with 400 (the draft, server processing, 30 October 2026).
 func (ca *AttestedCA) requireMechanism(target, credentialType, want string) error {
 	policy, err := ca.policyFor(target, credentialType)
 	if err != nil {
@@ -185,8 +186,8 @@ func (ca *AttestedCA) requireMechanism(target, credentialType, want string) erro
 
 	if policy.Mechanism != want {
 		return caError{
-			status: http.StatusForbidden,
-			desc:   fmt.Sprintf("target %q requires the %s mechanism", target, policy.Mechanism),
+			status: http.StatusBadRequest,
+			desc:   fmt.Sprintf("target %q is served by %s, not %s", target, policy.Mechanism, want),
 		}
 	}
 
@@ -538,9 +539,10 @@ func groupID(res *attestationResults, profile, credentialHint string) string {
 }
 
 // vaultBundle returns the pre-provisioned credential of credentialType for a group, minting it on first use. Replica
-// workloads sharing a group receive the same credential. The mock Secret Vault releases x509 (a certificate, its key
-// and the CA chain), api-key and psk; a request that names another Credential Type is refused with 406, as the draft
-// says, and one that names none is given x509.
+// workloads sharing a group receive the same credential. The mock Secret Vault releases x509 (the certificate, its
+// private key as a private-key item, and the CA chain as x509 items with the purpose "ca"), api-key (a hex token) and
+// psk (32 key octets); a request that names another Credential Type is refused with 406, as the draft says, and one
+// that names none is given x509. Every value is the unpadded base64url of the credential's octets, as the draft says.
 func (ca *AttestedCA) vaultBundle(
 	ctx context.Context,
 	gid string,
@@ -567,8 +569,11 @@ func (ca *AttestedCA) vaultBundle(
 		if _, err := rand.Read(secret); err != nil {
 			return nil, fmt.Errorf("failed to generate a group secret: %w", err)
 		}
+		if credentialType == est.CredentialTypeAPIKey {
+			secret = []byte(hex.EncodeToString(secret)) // an API key is a token: its value carries the token's UTF-8
+		}
 		bundle := &est.CredentialBundle{
-			CredentialItems: []est.CredentialItem{est.NewCredentialItem(credentialType, "raw", secret)},
+			CredentialItems: []est.CredentialItem{est.NewCredentialItem(credentialType, secret)},
 			Metadata:        map[string]any{"policy_version": res.PolicyVersion, "target": res.Target},
 		}
 		ca.mu.Lock()
@@ -618,19 +623,18 @@ func (ca *AttestedCA) vaultBundle(
 		return nil, err
 	}
 
-	var chain bytes.Buffer
+	items := []est.CredentialItem{
+		est.NewCredentialItem(est.CredentialTypeX509, cert.Raw),
+		est.NewCredentialItem(est.CredentialTypePrivateKey, keyDER),
+	}
 	for _, c := range cacerts {
-		if err := pem.Encode(&chain, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
-			return nil, fmt.Errorf("failed to encode CA certificate: %w", err)
-		}
+		ca := est.NewCredentialItem(est.CredentialTypeX509, c.Raw)
+		ca.Purpose = []string{"ca"}
+		items = append(items, ca)
 	}
 
 	bundle := &est.CredentialBundle{
-		CredentialItems: []est.CredentialItem{
-			est.NewCredentialItem(est.CredentialItemX509Cert, "der", cert.Raw),
-			est.NewCredentialItem(est.CredentialItemPKCS8Key, "pkcs8", keyDER),
-			est.NewCredentialItem(est.CredentialItemCACertsPEM, "pem", chain.Bytes()),
-		},
+		CredentialItems: items,
 		Metadata: map[string]any{
 			"not_after":      cert.NotAfter.UTC().Format(time.RFC3339),
 			"policy_version": res.PolicyVersion,
