@@ -9,7 +9,7 @@ package est
 //	suites        MLKEM768-P256 (HPKE KEM 0x0050, draft-ietf-hpke-pq) or DHKEM(P-256, HKDF-SHA256) (0x0010), each with
 //	              HKDF-SHA256 (0x0001) and AES-256-GCM (0x0002); the suite follows the encoding of CEKpub
 //	CEKpub        the 1249-octet MLKEM768-P256 encapsulation key, or the DER SubjectPublicKeyInfo of a P-256 key
-//	info          len32-prefixed: "tacra-est bundle v1", the Target, the freshness element
+//	info          len32-prefixed: "tacra hpke-base v1", the Target, the freshness element
 //	aad           the JSON Canonicalization Scheme (RFC 8785) of {group_id, target, handle?, credential_hint?}
 //	plaintext     the JCS of the CredentialBundle
 
@@ -66,7 +66,7 @@ type EncryptedCredentialBundle struct {
 	AAD        BundleAAD   `json:"aad"`
 }
 
-const bundleInfoLabel = "tacra-est bundle v1"
+const bundleInfoLabel = "tacra hpke-base v1"
 
 type bundleSuite struct {
 	suite BundleSuite
