@@ -50,9 +50,10 @@ const (
 )
 
 // BundleAAD is the associated data of the container: what the Attester bound and the group the Secret Vault chose.
+// Target carries the Target octets base64url, as TACRA-02 specifies, and the Attester compares the decoded octets.
 type BundleAAD struct {
 	GroupID        string `json:"group_id"`
-	Target         string `json:"target"`
+	Target         B64URL `json:"target"`
 	Handle         B64URL `json:"handle,omitempty"`
 	CredentialHint string `json:"credential_hint,omitempty"`
 }
@@ -240,7 +241,7 @@ func SealCredentialBundle(
 		return nil, fmt.Errorf("invalid CEK public key: %w", err)
 	}
 	kdf, aead := bundleKDFAEAD()
-	aad := BundleAAD{GroupID: groupID, Target: target, Handle: handle, CredentialHint: credentialHint}
+	aad := BundleAAD{GroupID: groupID, Target: B64URL(target), Handle: handle, CredentialHint: credentialHint}
 	info := BundleInfo(target, handle)
 	enc, snd, err := hpke.NewSender(pk, kdf, aead, info)
 	if err != nil {
@@ -298,7 +299,7 @@ func (b *EncryptedCredentialBundle) Open(
 	if b.Container != BundleContainer {
 		return nil, ErrBundleContainer
 	}
-	if b.AAD.Target != target || !bytes.Equal(b.AAD.Handle, handle) || b.AAD.CredentialHint != credentialHint {
+	if !bytes.Equal(b.AAD.Target, []byte(target)) || !bytes.Equal(b.AAD.Handle, handle) || b.AAD.CredentialHint != credentialHint {
 		return nil, ErrBundleAAD
 	}
 	info := BundleInfo(target, handle)

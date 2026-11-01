@@ -322,7 +322,7 @@ func TestMockFlowRetrieve(t *testing.T) {
 			if sealed.Container != est.BundleContainer || sealed.Suite != est.BundleSuiteDHKEMP256 {
 				t.Fatalf("container %q with suite %+v, want %q with %+v", sealed.Container, sealed.Suite, est.BundleContainer, est.BundleSuiteDHKEMP256)
 			}
-			if sealed.AAD.Target != target || !bytes.Equal(sealed.AAD.Handle, handle) {
+			if string(sealed.AAD.Target) != target || !bytes.Equal(sealed.AAD.Handle, handle) {
 				t.Fatalf("container for %q with handle %x, want %q with %x", sealed.AAD.Target, sealed.AAD.Handle, target, handle)
 			}
 			bundle, err := sealed.Open(cek, cekPub, target, handle, "")
