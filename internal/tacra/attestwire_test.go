@@ -49,7 +49,7 @@ func post(h http.Handler, path, ctype string, body []byte) *httptest.ResponseRec
 	return rec
 }
 
-const unsupportedTarget = "403 unsupported Target\n"
+const unsupportedTarget = "404 Target not served\n"
 
 func TestAttestMediaTypes(t *testing.T) {
 	h := router(t, nil)
@@ -78,7 +78,7 @@ func TestAttestMediaTypes(t *testing.T) {
 			} {
 				got := post(h, path, c.ctype, r.body)
 				if c.taken {
-					if got.Code != http.StatusForbidden || got.Body.String() != unsupportedTarget {
+					if got.Code != http.StatusNotFound || got.Body.String() != unsupportedTarget {
 						t.Errorf("%s as %q: %d %q, want the backend's %q", path, c.ctype, got.Code, got.Body.String(),
 							unsupportedTarget)
 					}

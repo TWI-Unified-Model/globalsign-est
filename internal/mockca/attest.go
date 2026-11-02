@@ -26,7 +26,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,12 +144,21 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 
 	policy, ok := ca.targets[target]
 	if !ok {
+		// A target the EST Server does not serve is a resource it does not have: the query is part of the target URI
+		// (RFC 9110, Section 7.1), so 404 (draft, Error Handling).
 		return TargetPolicy{}, caError{
-			status: http.StatusForbidden,
-			desc:   fmt.Sprintf("target %q is not an allowed target", target),
+			status: http.StatusNotFound,
+			desc:   fmt.Sprintf("target %q is not served", target),
 		}
 	}
 
+	if credentialType != "" && !est.KnownCredentialType(credentialType) {
+		// A token the profile does not define is a malformed request (the draft, Error Handling: 400).
+		return TargetPolicy{}, caError{
+			status: http.StatusBadRequest,
+			desc:   fmt.Sprintf("credential type %q is not a token of the profile", credentialType),
+		}
+	}
 	if credentialType != "" && len(policy.CredentialTypes) > 0 {
 		supported := false
 		for _, ct := range policy.CredentialTypes {
@@ -160,9 +168,12 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 			}
 		}
 		if !supported {
+			// A Credential Type this RATS Relying Party does not serve for the Target: 403, and the body names
+			// the ones it serves (the draft, Error Handling).
 			return TargetPolicy{}, caError{
 				status: http.StatusForbidden,
-				desc:   fmt.Sprintf("credential type %q is not available for target %q", credentialType, target),
+				desc: fmt.Sprintf("credential type %q is not served for target %q; served: %s",
+					credentialType, target, strings.Join(policy.CredentialTypes, ", ")),
 			}
 		}
 	}
@@ -170,8 +181,10 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 	return policy, nil
 }
 
-// requireMechanism rejects a second-leg request that does not match the
-// mechanism the CAS selected for the target.
+// requireMechanism rejects a second-leg request to the resource of the other
+// mode: a Target the CAS provisions by retrieve is served by a Secret Vault, one
+// it provisions by enroll by a Credential Authority, and a request to the other
+// resource is refused with 400 (the draft, server processing, 30 October 2026).
 func (ca *AttestedCA) requireMechanism(target, credentialType, want string) error {
 	policy, err := ca.policyFor(target, credentialType)
 	if err != nil {
@@ -180,8 +193,8 @@ func (ca *AttestedCA) requireMechanism(target, credentialType, want string) erro
 
 	if policy.Mechanism != want {
 		return caError{
-			status: http.StatusForbidden,
-			desc:   fmt.Sprintf("target %q requires the %s mechanism", target, policy.Mechanism),
+			status: http.StatusBadRequest,
+			desc:   fmt.Sprintf("target %q is served by %s, not %s", target, policy.Mechanism, want),
 		}
 	}
 
@@ -267,7 +280,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 	}
 
 	if mechanism == est.MechanismRetrieve {
-		resp.AcceptableCEK = []string{est.EncECDHP256}
+		resp.AcceptableCEK = []string{est.AcceptableCEKMLKEM768P256, est.AcceptableCEKDHKEMP256}
 	} else {
 		resp.AcceptableCSK = []string{est.SigECDSAP256SHA256}
 	}
@@ -275,8 +288,8 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 	return resp, nil
 }
 
-// consumeHandle validates and burns a present-nonce Handle. A replayed or
-// expired Handle yields 409 Conflict.
+// consumeHandle validates and burns a present-nonce Handle. A replayed, expired or
+// never issued Handle yields 400 Bad Request, as the draft says.
 func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte) error {
 	if len(handle) == 0 {
 		return caError{
@@ -290,24 +303,25 @@ func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte
 
 	state, ok := ca.nonces[hex.EncodeToString(handle)]
 	if !ok {
-		return caError{status: http.StatusConflict, desc: "unknown handle"}
+		return caError{status: http.StatusBadRequest, desc: "unknown handle"}
 	}
 	if state.used {
-		return caError{status: http.StatusConflict, desc: "handle replay detected"}
+		return caError{status: http.StatusBadRequest, desc: "handle replay detected"}
 	}
 	if time.Now().After(state.expires) {
-		return caError{status: http.StatusConflict, desc: "handle has expired"}
+		return caError{status: http.StatusBadRequest, desc: "handle has expired"}
 	}
 	if state.target != target {
 		return caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "handle was not issued for this target",
 		}
 	}
-	if state.credentialType != credentialType {
+	if state.credentialType != "" && state.credentialType != credentialType {
+		// The draft: a type attest-initiate named must come back on the second leg; a type it omitted may be named.
 		return caError{
-			status: http.StatusForbidden,
-			desc:   "handle was not issued for this credential type",
+			status: http.StatusBadRequest,
+			desc:   fmt.Sprintf("handle was issued for credential type %q", state.credentialType),
 		}
 	}
 
@@ -341,7 +355,7 @@ func (ca *AttestedCA) verifyEvidence(
 	expectedFreshnessKind := policyFreshnessKind(policy)
 	if freshnessKind != expectedFreshnessKind {
 		return nil, caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "freshness kind does not match target policy",
 		}
 	}
@@ -357,7 +371,7 @@ func (ca *AttestedCA) verifyEvidence(
 	// Evidence-to-Freshness binding.
 	if claims.FreshnessKind != freshnessKind {
 		return nil, caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "attestation failed: evidence freshness kind mismatch",
 		}
 	}
@@ -367,7 +381,7 @@ func (ca *AttestedCA) verifyEvidence(
 		if claims.Nonce == nil || claims.Nonce.Len() != 1 ||
 			!bytes.Equal(claims.Nonce.GetI(0), handle) {
 			return nil, caError{
-				status: http.StatusForbidden,
+				status: http.StatusBadRequest,
 				desc:   "attestation failed: evidence not bound to handle",
 			}
 		}
@@ -379,13 +393,13 @@ func (ca *AttestedCA) verifyEvidence(
 		if len(handle) == 0 || claims.Nonce == nil || claims.Nonce.Len() != 1 ||
 			!bytes.Equal(claims.Nonce.GetI(0), handle) {
 			return nil, caError{
-				status: http.StatusForbidden,
+				status: http.StatusBadRequest,
 				desc:   "attestation failed: evidence not bound to epoch marker",
 			}
 		}
 		if !bytes.Equal(handle, []byte(policy.EpochMarker)) {
 			return nil, caError{
-				status: http.StatusConflict,
+				status: http.StatusBadRequest,
 				desc:   "epoch marker has moved",
 			}
 		}
@@ -410,7 +424,7 @@ func (ca *AttestedCA) verifyEvidence(
 		issuedAt := time.Unix(claims.IssuedAt, 0)
 		if !stamped.Equal(issuedAt) {
 			return nil, caError{
-				status: http.StatusForbidden,
+				status: http.StatusBadRequest,
 				desc:   "attestation failed: evidence not bound to its timestamp",
 			}
 		}
@@ -448,7 +462,7 @@ func (ca *AttestedCA) verifyEvidence(
 	expectedDigest := est.BindingDigest(handle, target, subject)
 	if !bytes.Equal(claims.BindingDigest, expectedDigest) {
 		return nil, caError{
-			status: http.StatusForbidden,
+			status: http.StatusBadRequest,
 			desc:   "attestation failed: evidence not bound to this server, target or key material",
 		}
 	}
@@ -479,6 +493,16 @@ func (ca *AttestedCA) EnrollCredential(
 ) (*x509.Certificate, error) {
 	if err := ca.requireMechanism(req.Target, req.CredentialType, est.MechanismEnroll); err != nil {
 		return nil, err
+	}
+	switch req.CredentialType {
+	case "", est.CredentialTypeX509:
+	case est.CredentialTypeWIC:
+		return nil, caError{status: http.StatusForbidden, desc: "the draft mints a wic at enrollment, this mock does not yet; served: x509"}
+	default:
+		if !est.KnownCredentialType(req.CredentialType) {
+			return nil, caError{status: http.StatusBadRequest, desc: fmt.Sprintf("credential type %q is not a token of the profile", req.CredentialType)}
+		}
+		return nil, caError{status: http.StatusForbidden, desc: fmt.Sprintf("credential type %q is not minted by enrollment; served: x509", req.CredentialType)}
 	}
 
 	if len(req.CSR) == 0 {
@@ -525,21 +549,61 @@ func groupID(res *attestationResults, profile, credentialHint string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// vaultBundle returns the pre-provisioned credential for a group, minting it
-// on first use. Replica workloads sharing a group receive the same credential.
+// vaultBundle returns the pre-provisioned credential of credentialType for a group, minting it on first use. Replica
+// workloads sharing a group receive the same credential. The mock Secret Vault releases x509 (the certificate, its
+// private key as a private-key item, and the CA chain as x509 items with the purpose "ca"), api-key (a hex token) and
+// psk (32 key octets); a request that names another Credential Type is refused with 403, as the draft says, and one
+// that names none is given x509. Every value is the unpadded base64url of the credential's octets, as the draft says.
 func (ca *AttestedCA) vaultBundle(
 	ctx context.Context,
 	gid string,
+	credentialType string,
 	res *attestationResults,
 	aps string,
 	r *http.Request,
 ) (*est.CredentialBundle, error) {
+	if credentialType == "" {
+		credentialType = est.CredentialTypeX509
+	}
+	cacheKey := gid + "|" + credentialType
 	ca.mu.Lock()
-	if bundle, ok := ca.groups[gid]; ok {
+	if bundle, ok := ca.groups[cacheKey]; ok {
 		ca.mu.Unlock()
 		return bundle, nil
 	}
 	ca.mu.Unlock()
+
+	switch credentialType {
+	case est.CredentialTypeX509:
+	case est.CredentialTypeAPIKey, est.CredentialTypePSK:
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return nil, fmt.Errorf("failed to generate a group secret: %w", err)
+		}
+		if credentialType == est.CredentialTypeAPIKey {
+			secret = []byte(hex.EncodeToString(secret)) // an API key is a token: its value carries the token's UTF-8
+		}
+		bundle := &est.CredentialBundle{
+			CredentialItems: []est.CredentialItem{est.NewCredentialItem(credentialType, secret)},
+			Metadata:        map[string]any{"policy_version": res.PolicyVersion, "target": res.Target},
+		}
+		ca.mu.Lock()
+		if existing, ok := ca.groups[cacheKey]; ok {
+			bundle = existing
+		} else {
+			ca.groups[cacheKey] = bundle
+		}
+		ca.mu.Unlock()
+		return bundle, nil
+	default:
+		if !est.KnownCredentialType(credentialType) {
+			return nil, caError{status: http.StatusBadRequest, desc: fmt.Sprintf("credential type %q is not a token of the profile", credentialType)}
+		}
+		return nil, caError{
+			status: http.StatusForbidden,
+			desc:   fmt.Sprintf("credential type %q is not released by this Secret Vault; served: x509, api-key, psk", credentialType),
+		}
+	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -573,21 +637,19 @@ func (ca *AttestedCA) vaultBundle(
 		return nil, err
 	}
 
-	var chain bytes.Buffer
+	items := []est.CredentialItem{
+		est.NewCredentialItem(est.CredentialTypeX509, cert.Raw),
+		est.NewCredentialItem(est.CredentialTypePrivateKey, keyDER),
+	}
 	for _, c := range cacerts {
-		if err := pem.Encode(&chain, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
-			return nil, fmt.Errorf("failed to encode CA certificate: %w", err)
-		}
+		ca := est.NewCredentialItem(est.CredentialTypeX509, c.Raw)
+		ca.Purpose = []string{"ca"}
+		items = append(items, ca)
 	}
 
 	bundle := &est.CredentialBundle{
-		GroupID: gid,
-		CredentialItems: []est.CredentialItem{
-			{Type: est.CredentialItemX509Cert, Data: cert.Raw},
-			{Type: est.CredentialItemPKCS8Key, Data: keyDER},
-			{Type: est.CredentialItemCACertsPEM, Data: chain.Bytes()},
-		},
-		Metadata: map[string]string{
+		CredentialItems: items,
+		Metadata: map[string]any{
 			"not_after":      cert.NotAfter.UTC().Format(time.RFC3339),
 			"policy_version": res.PolicyVersion,
 			"target":         res.Target,
@@ -595,10 +657,10 @@ func (ca *AttestedCA) vaultBundle(
 	}
 
 	ca.mu.Lock()
-	if existing, ok := ca.groups[gid]; ok {
+	if existing, ok := ca.groups[cacheKey]; ok {
 		bundle = existing
 	} else {
-		ca.groups[gid] = bundle
+		ca.groups[cacheKey] = bundle
 	}
 	ca.mu.Unlock()
 
@@ -639,14 +701,12 @@ func (ca *AttestedCA) RetrieveCredential(
 
 	gid := groupID(res, req.Profile, credentialHint)
 
-	bundle, err := ca.vaultBundle(ctx, gid, res, aps, r)
+	bundle, err := ca.vaultBundle(ctx, gid, req.CredentialType, res, aps, r)
 	if err != nil {
 		return nil, err
 	}
 
-	sealed, err := est.SealCredentialBundle(
-		bundle, req.CEKPub, req.Handle, req.Profile, req.Target, credentialHint,
-	)
+	sealed, err := est.SealCredentialBundle(bundle, gid, req.CEKPub, req.Handle, req.Target, credentialHint)
 	if err != nil {
 		return nil, caError{
 			status: http.StatusBadRequest,

@@ -249,10 +249,12 @@ func (b *Backend) post(ctx context.Context, rrp, path string, v, out any) ([]byt
 	return raw, nil
 }
 
+// route is the RRP that serves a Target. A Target this server does not serve is a resource it does not have: 404
+// (the draft, Error Handling; the query is part of the target URI).
 func (b *Backend) route(target string) (string, RRP, error) {
 	name, ok := b.cfg.Targets[target]
 	if !ok {
-		return "", RRP{}, fail(http.StatusForbidden, "unsupported Target")
+		return "", RRP{}, fail(http.StatusNotFound, "Target not served")
 	}
 	return name, b.cfg.RRPs[name], nil
 }
@@ -377,10 +379,10 @@ func (b *Backend) correlateKey(kind, key, target, credentialType string) error {
 		}
 	}
 	if live == 0 {
-		return fail(http.StatusConflict, "no attest-initiate returned this Handle, or it expired")
+		return fail(http.StatusBadRequest, "no attest-initiate returned this Handle, or it expired")
 	}
 	if match < 0 {
-		return fail(http.StatusForbidden, "Target, Credential Type or Freshness Kind differ from the attest-initiate")
+		return fail(http.StatusBadRequest, "Target, Credential Type or Freshness Kind differ from the attest-initiate")
 	}
 	if kind == est.FreshnessPresentNonce { // single use
 		ss := b.sessions[key]
@@ -494,7 +496,8 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 		return "", RRP{}, secondLeg{}, err
 	}
 	if rrp.Mode != mode {
-		return "", RRP{}, secondLeg{}, fail(http.StatusForbidden, "the Target is provisioned by %s, not %s", rrp.Mode, mode)
+		// a request to the resource of the other mode: 400 (the draft, server processing, 30 October 2026)
+		return "", RRP{}, secondLeg{}, fail(http.StatusBadRequest, "the Target is provisioned by %s, not %s", rrp.Mode, mode)
 	}
 	// the Evidence format before the Handle: a request refused for its format (415) leaves the Handle to the next one,
 	// as the draft's processing validates the media type before it correlates the Handle

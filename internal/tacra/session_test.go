@@ -39,8 +39,8 @@ func TestEpochSharedByTargets(t *testing.T) {
 			}
 		}
 	}
-	if got := status(b.correlateKey(est.FreshnessPresentEpoch, key, "https://db-nonce.tacra.example", "x509")); got != http.StatusForbidden {
-		t.Fatalf("a Target that asked for no Initiate: %d, want 403", got)
+	if got := status(b.correlateKey(est.FreshnessPresentEpoch, key, "https://db-nonce.tacra.example", "x509")); got != http.StatusBadRequest {
+		t.Fatalf("a Target that asked for no Initiate: %d, want 400", got)
 	}
 	// asking again for the same Target replaces its session rather than adding one
 	b.remember(key, session{"https://db-epoch.tacra.example", "x509", "ca", est.FreshnessPresentEpoch, live})
@@ -53,14 +53,14 @@ func TestNonceSingleUse(t *testing.T) {
 	b := &Backend{sessions: map[string][]session{}}
 	key := "a present-nonce Handle"
 	b.remember(key, session{"https://db-nonce.tacra.example", "x509", "ca", est.FreshnessPresentNonce, time.Now().Add(time.Minute)})
-	if got := status(b.correlateKey(est.FreshnessPresentNonce, key, "https://db-nonce.tacra.example", "api-key")); got != http.StatusForbidden {
-		t.Fatalf("another Credential Type: %d, want 403", got)
+	if got := status(b.correlateKey(est.FreshnessPresentNonce, key, "https://db-nonce.tacra.example", "api-key")); got != http.StatusBadRequest {
+		t.Fatalf("another Credential Type: %d, want 400", got)
 	}
 	if got := status(b.correlateKey(est.FreshnessPresentNonce, key, "https://db-nonce.tacra.example", "x509")); got != http.StatusOK {
 		t.Fatalf("its own second leg: %d, want 200", got)
 	}
-	if got := status(b.correlateKey(est.FreshnessPresentNonce, key, "https://db-nonce.tacra.example", "x509")); got != http.StatusConflict {
-		t.Fatalf("the Handle again: %d, want 409", got)
+	if got := status(b.correlateKey(est.FreshnessPresentNonce, key, "https://db-nonce.tacra.example", "x509")); got != http.StatusBadRequest {
+		t.Fatalf("the Handle again: %d, want 400", got)
 	}
 }
 
@@ -68,8 +68,8 @@ func TestExpiredOrUnknown(t *testing.T) {
 	b := &Backend{sessions: map[string][]session{}}
 	b.remember("old", session{"https://db-nonce.tacra.example", "x509", "ca", est.FreshnessPresentNonce, time.Now().Add(-time.Second)})
 	for _, key := range []string{"old", "never returned"} {
-		if got := status(b.correlateKey(est.FreshnessPresentNonce, key, "https://db-nonce.tacra.example", "x509")); got != http.StatusConflict {
-			t.Fatalf("%s: %d, want 409", key, got)
+		if got := status(b.correlateKey(est.FreshnessPresentNonce, key, "https://db-nonce.tacra.example", "x509")); got != http.StatusBadRequest {
+			t.Fatalf("%s: %d, want 400", key, got)
 		}
 	}
 	if got := status(b.correlateKey(est.FreshnessAbsentNone, "", "https://db-none.tacra.example", "x509")); got != http.StatusOK {
