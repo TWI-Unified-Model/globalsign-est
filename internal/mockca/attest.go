@@ -56,6 +56,7 @@ const (
 type nonceState struct {
 	target         string
 	credentialType string
+	credentialHint string
 	expires        time.Time
 	used           bool
 }
@@ -220,7 +221,7 @@ func policyMaxAge(policy TargetPolicy) int {
 // decided per target by the CAS, opaquely to the Attester.
 func (ca *AttestedCA) InitiateRemoteAttestation(
 	ctx context.Context,
-	target, credentialType, aps string,
+	target, credentialType, credentialHint, aps string,
 	r *http.Request,
 ) (*est.AttestationInitiateResponse, error) {
 	policy, err := ca.policyFor(target, credentialType)
@@ -248,6 +249,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 		ca.nonces[hex.EncodeToString(handle)] = &nonceState{
 			target:         target,
 			credentialType: credentialType,
+			credentialHint: credentialHint,
 			expires:        time.Now().Add(nonceLifetime),
 		}
 		ca.mu.Unlock()
@@ -290,7 +292,7 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 
 // consumeHandle validates and burns a present-nonce Handle. A replayed, expired or
 // never issued Handle yields 400 Bad Request, as the draft says.
-func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte) error {
+func (ca *AttestedCA) consumeHandle(target, credentialType, credentialHint string, handle []byte) error {
 	if len(handle) == 0 {
 		return caError{
 			status: http.StatusBadRequest,
@@ -324,6 +326,13 @@ func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte
 			desc:   fmt.Sprintf("handle was issued for credential type %q", state.credentialType),
 		}
 	}
+	if state.credentialHint != "" && state.credentialHint != credentialHint {
+		// The draft: a Credential Hint attest-initiate named must come back on the second leg; one it omitted may be named.
+		return caError{
+			status: http.StatusBadRequest,
+			desc:   fmt.Sprintf("handle was issued for credential hint %q", state.credentialHint),
+		}
+	}
 
 	state.used = true
 
@@ -343,7 +352,7 @@ type attestationResults struct {
 // form binding_input digest ({{binding-input}}) covering the Target and the
 // subject (CSR or CEKpub), then returns Attestation Results.
 func (ca *AttestedCA) verifyEvidence(
-	target, credentialType, freshnessKind string,
+	target, credentialType, credentialHint, freshnessKind string,
 	handle []byte,
 	evidence []byte,
 	subject []byte,
@@ -385,7 +394,7 @@ func (ca *AttestedCA) verifyEvidence(
 				desc:   "attestation failed: evidence not bound to handle",
 			}
 		}
-		if err := ca.consumeHandle(target, credentialType, handle); err != nil {
+		if err := ca.consumeHandle(target, credentialType, credentialHint, handle); err != nil {
 			return nil, err
 		}
 
@@ -524,7 +533,7 @@ func (ca *AttestedCA) EnrollCredential(
 	}
 
 	if _, err := ca.verifyEvidence(
-		req.Target, req.CredentialType, req.FreshnessKind, req.Handle, req.Evidence, req.CSR,
+		req.Target, req.CredentialType, hintOf(req.CredentialHint), req.FreshnessKind, req.Handle, req.Evidence, req.CSR,
 	); err != nil {
 		return nil, err
 	}
@@ -688,7 +697,7 @@ func (ca *AttestedCA) RetrieveCredential(
 	}
 
 	res, err := ca.verifyEvidence(
-		req.Target, req.CredentialType, req.FreshnessKind, req.Handle, req.Evidence, req.CEKPub,
+		req.Target, req.CredentialType, hintOf(req.CredentialHint), req.FreshnessKind, req.Handle, req.Evidence, req.CEKPub,
 	)
 	if err != nil {
 		return nil, err
@@ -715,4 +724,12 @@ func (ca *AttestedCA) RetrieveCredential(
 	}
 
 	return sealed, nil
+}
+
+// hintOf is the Credential Hint of a second-leg request, or the empty string when the request carries none.
+func hintOf(h *string) string {
+	if h == nil {
+		return ""
+	}
+	return *h
 }

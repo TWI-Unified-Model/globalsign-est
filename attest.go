@@ -132,7 +132,7 @@ type AttestationCA interface {
 	// InitiateRemoteAttestation obtains a Freshness kind, and a Handle if any,
 	// from the configured Verifier or Relying Party for the supplied target and
 	// credential type. It also reports the credential acquisition mechanism.
-	InitiateRemoteAttestation(ctx context.Context, target, credentialType, aps string, r *http.Request) (*AttestationInitiateResponse, error)
+	InitiateRemoteAttestation(ctx context.Context, target, credentialType, credentialHint, aps string, r *http.Request) (*AttestationInitiateResponse, error)
 
 	// EnrollCredential forwards Evidence to the Verifier and the CSR plus the
 	// resulting Attestation Results to the Credential Authority.
@@ -559,6 +559,7 @@ func attestInitiate(w http.ResponseWriter, r *http.Request) {
 		ctx,
 		r.URL.Query().Get(attestTargetParam),
 		r.URL.Query().Get(attestCredentialTypeParam),
+		r.URL.Query().Get(attestCredentialHintParam),
 		aps,
 		r,
 	)

@@ -41,6 +41,7 @@ const (
 // cannot convey (what attest-initiate carries is TheBankster/rats-tacra#19).
 const (
 	attestCredentialTypeParam = "credential_type"
+	attestCredentialHintParam = "credential_hint"
 	attestTargetParam         = "target"
 )
 

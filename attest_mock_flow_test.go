@@ -161,9 +161,14 @@ func newMockFlow(t *testing.T) *mockFlow {
 // timestamp element, or nothing.
 func (f *mockFlow) handle(t *testing.T, target, credentialType, kind string) []byte {
 	t.Helper()
+	return f.handleWithHint(t, target, credentialType, "", kind)
+}
+
+func (f *mockFlow) handleWithHint(t *testing.T, target, credentialType, credentialHint, kind string) []byte {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	resp, err := f.client.InitiateRemoteAttestation(ctx, target, credentialType)
+	resp, err := f.client.InitiateRemoteAttestation(ctx, target, credentialType, credentialHint)
 	if err != nil {
 		t.Fatalf("attest-initiate for %s: %v", target, err)
 	}
@@ -398,7 +403,7 @@ func TestMockFlowCredentialTypeNotServed(t *testing.T) {
 		{flowEnrollTarget(kind), est.CredentialTypeWIC},
 		{flowRetrieveTarget(kind), est.CredentialTypePSK},
 	} {
-		_, err := f.client.InitiateRemoteAttestation(ctx, c.target, c.credentialType)
+		_, err := f.client.InitiateRemoteAttestation(ctx, c.target, c.credentialType, "")
 		var estErr est.Error
 		if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusForbidden {
 			t.Fatalf("attest-initiate for %s with %s: %v, want 403", c.target, c.credentialType, err)
@@ -408,7 +413,7 @@ func TestMockFlowCredentialTypeNotServed(t *testing.T) {
 		}
 	}
 	// a Target the server does not serve is a resource it does not have: 404
-	_, err := f.client.InitiateRemoteAttestation(ctx, "https://nobody.example", est.CredentialTypeX509)
+	_, err := f.client.InitiateRemoteAttestation(ctx, "https://nobody.example", est.CredentialTypeX509, "")
 	var notFound est.Error
 	if !errors.As(err, &notFound) || notFound.StatusCode() != http.StatusNotFound {
 		t.Fatalf("attest-initiate for a Target not served: %v, want 404", err)
@@ -596,5 +601,34 @@ func TestMockFlowAbsentTimestamp(t *testing.T) {
 
 	if _, err := est.NewMockEvidence(f.provider, kind, nil, target, csr); err == nil {
 		t.Fatal("mock Evidence of absent-timestamp made without a timestamp element")
+	}
+}
+
+// TestMockFlowCredentialHintCorrelated: a Credential Hint named at attest-initiate
+// must come back unchanged on the present-nonce second leg, and one that
+// attest-initiate omitted may be named there (the draft, 2 November 2026).
+func TestMockFlowCredentialHintCorrelated(t *testing.T) {
+	f := newMockFlow(t)
+	kind := est.FreshnessPresentNonce
+	target := flowRetrieveTarget(kind)
+	cek, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate CEK: %v", err)
+	}
+	cekPub := flowCEKPub(t, cek)
+	named, other := "payments", "ledger"
+	handle := f.handleWithHint(t, target, est.CredentialTypeAPIKey, named, kind)
+	_, err = f.retrieveAs(kind, est.CredentialTypeAPIKey, &other, handle, cekPub, f.evidence(t, kind, handle, target, cekPub))
+	requireRefusal(t, err, "credential hint")
+	handle = f.handleWithHint(t, target, est.CredentialTypeAPIKey, named, kind)
+	_, err = f.retrieveAs(kind, est.CredentialTypeAPIKey, nil, handle, cekPub, f.evidence(t, kind, handle, target, cekPub))
+	requireRefusal(t, err, "credential hint")
+	handle = f.handleWithHint(t, target, est.CredentialTypeAPIKey, named, kind)
+	if _, err := f.retrieveAs(kind, est.CredentialTypeAPIKey, &named, handle, cekPub, f.evidence(t, kind, handle, target, cekPub)); err != nil {
+		t.Fatalf("the hint repeated: %v", err)
+	}
+	handle = f.handle(t, target, est.CredentialTypeAPIKey, kind)
+	if _, err := f.retrieveAs(kind, est.CredentialTypeAPIKey, &named, handle, cekPub, f.evidence(t, kind, handle, target, cekPub)); err != nil {
+		t.Fatalf("a hint named only on the second leg: %v", err)
 	}
 }

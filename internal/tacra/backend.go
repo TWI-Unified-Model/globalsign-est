@@ -78,8 +78,8 @@ type RRP struct {
 }
 
 type session struct {
-	target, credentialType, rrp, kind string
-	expires                           time.Time
+	target, credentialType, hint, rrp, kind string
+	expires                                 time.Time
 }
 
 // Backend implements est.CA, est.AttestationCA and est.RawRetriever.
@@ -272,13 +272,17 @@ type gatewayInitiation struct {
 }
 
 // InitiateRemoteAttestation obtains the Freshness Kind and Handle from the RRP that serves the Target.
-func (b *Backend) InitiateRemoteAttestation(ctx context.Context, target, credentialType, aps string, r *http.Request) (*est.AttestationInitiateResponse, error) {
+func (b *Backend) InitiateRemoteAttestation(ctx context.Context, target, credentialType, credentialHint, aps string, r *http.Request) (*est.AttestationInitiateResponse, error) {
 	name, rrp, err := b.route(target)
 	if err != nil {
 		return nil, err
 	}
 	var g gatewayInitiation
-	if _, err := b.post(ctx, name, "/tacra/v1/initiate", map[string]string{"target": target, "credential_type": credentialType}, &g); err != nil {
+	ask := map[string]string{"target": target, "credential_type": credentialType}
+	if credentialHint != "" {
+		ask["credential_hint"] = credentialHint // the Credential Hint of Initiate-Credential-Acquisition (TACRA 5.1), forwarded to the RRP
+	}
+	if _, err := b.post(ctx, name, "/tacra/v1/initiate", ask, &g); err != nil {
 		return nil, err
 	}
 	if g.Mode != rrp.Mode {
@@ -289,8 +293,8 @@ func (b *Backend) InitiateRemoteAttestation(ctx context.Context, target, credent
 		return nil, fail(http.StatusBadGateway, "RRP %s: %v", name, err)
 	}
 	if len(resp.Handle) > 0 {
-		b.remember(hex.EncodeToString(resp.Handle), session{target, credentialType, name, g.FreshnessKind,
-			time.Now().Add(time.Duration(g.ExpiresIn) * time.Second)})
+		b.remember(hex.EncodeToString(resp.Handle), session{target: target, credentialType: credentialType, hint: credentialHint,
+			rrp: name, kind: g.FreshnessKind, expires: time.Now().Add(time.Duration(g.ExpiresIn) * time.Second)})
 	}
 	return resp, nil
 }
@@ -343,7 +347,7 @@ func (b *Backend) remember(key string, s session) {
 	for k, ss := range b.sessions {
 		live := ss[:0]
 		for _, x := range ss {
-			if !now.After(x.expires) && !(k == key && x.target == s.target && x.credentialType == s.credentialType && x.kind == s.kind) {
+			if !now.After(x.expires) && !(k == key && x.target == s.target && x.credentialType == s.credentialType && x.hint == s.hint && x.kind == s.kind) {
 				live = append(live, x)
 			}
 		}
@@ -358,11 +362,15 @@ func (b *Backend) remember(key string, s session) {
 
 // correlate refuses a second leg that does not belong to an attest-initiate that returned its Handle for its Target,
 // Credential Type and kind.
-func (b *Backend) correlate(kind string, handle []byte, target, credentialType string) error {
-	return b.correlateKey(kind, hex.EncodeToString(handle), target, credentialType)
+func (b *Backend) correlate(kind string, handle []byte, target, credentialType, credentialHint string) error {
+	return b.correlateKey(kind, hex.EncodeToString(handle), target, credentialType, credentialHint)
 }
 
-func (b *Backend) correlateKey(kind, key, target, credentialType string) error {
+// correlateKey keeps the two legs of one exchange together, as the EST profile's processing says (2 November 2026):
+// a present-nonce request must repeat the Target of its attest-initiate, and a Credential Type or Credential Hint that
+// attest-initiate named, while one it omitted may be named; a present-epoch Handle serves every request of the epoch
+// for its Target, and the Credential Type and Hint are not correlated but forwarded to the RRP.
+func (b *Backend) correlateKey(kind, key, target, credentialType, credentialHint string) error {
 	if kind != est.FreshnessPresentNonce && kind != est.FreshnessPresentEpoch {
 		return nil // no Handle was returned; the RRP checks the freshness element
 	}
@@ -374,15 +382,20 @@ func (b *Backend) correlateKey(kind, key, target, credentialType string) error {
 			continue
 		}
 		live++
-		if s.target == target && s.credentialType == credentialType && s.kind == kind {
-			match = i
+		if s.target != target || s.kind != kind {
+			continue
 		}
+		if kind == est.FreshnessPresentNonce && ((s.credentialType != "" && s.credentialType != credentialType) ||
+			(s.hint != "" && s.hint != credentialHint)) {
+			continue
+		}
+		match = i
 	}
 	if live == 0 {
 		return fail(http.StatusBadRequest, "no attest-initiate returned this Handle, or it expired")
 	}
 	if match < 0 {
-		return fail(http.StatusBadRequest, "Target, Credential Type or Freshness Kind differ from the attest-initiate")
+		return fail(http.StatusBadRequest, "Target or Freshness Kind differ from the attest-initiate, or a Credential Type or Credential Hint it named is not repeated")
 	}
 	if kind == est.FreshnessPresentNonce { // single use
 		ss := b.sessions[key]
@@ -505,7 +518,7 @@ func (b *Backend) forward(ctx context.Context, mode, kind, target, credentialTyp
 	if err != nil {
 		return "", RRP{}, secondLeg{}, err
 	}
-	if err := b.correlate(kind, handle, target, credentialType); err != nil {
+	if err := b.correlate(kind, handle, target, credentialType, hint(hintp)); err != nil {
 		return "", RRP{}, secondLeg{}, err
 	}
 	leg := secondLeg{FreshnessKind: kind, Target: target, CredentialType: credentialType, CredentialHint: hint(hintp)}

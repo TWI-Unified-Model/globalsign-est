@@ -139,7 +139,7 @@ Relying Party expects, in one of two modes.
 
 | Resource | Method and request | Response |
 |---|---|---|
-| `/.well-known/est/attest-initiate` | `GET`, query `target` and `credential_type`; `Accept: application/est-attest-initiate+json` | the Freshness Kind of the Target, a Handle when the kind is `present-*`, the acceptable Evidence formats and key algorithms |
+| `/.well-known/est/attest-initiate` | `GET`, query `target`, `credential_type` and `credential_hint`; `Accept: application/est-attest-initiate+json` | the Freshness Kind of the Target, a Handle when the kind is `present-*`, the acceptable Evidence formats and key algorithms |
 | `/.well-known/est/attest-enroll` | `POST application/est-attest-enroll+json`: a CSR and Evidence bound to it | the certificate, `application/pkcs7-mime` base64 (as simpleenroll) |
 | `/.well-known/est/attest-retrieve` | `POST application/est-attest-retrieve+json`: a CEK public key and Evidence bound to it | `application/est-attest-bundle+json`: the credential in a container sealed to the CEK (`hpke-base`, HPKE in base mode under DHKEM(P-256) or MLKEM768-P256, the suite following the encoding of CEKpub)) |
 
