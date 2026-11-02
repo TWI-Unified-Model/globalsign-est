@@ -386,7 +386,7 @@ func TestMockFlowRetrieve(t *testing.T) {
 }
 
 // TestMockFlowCredentialTypeNotServed: a credential_type the RATS Relying
-// Party does not serve for the Target is refused with 406, at attest-initiate
+// Party does not serve for the Target is refused with 403, at attest-initiate
 // and on the second leg alike, and the body names the ones it serves; a wic,
 // which the draft mints at enrollment, this mock does not mint yet.
 func TestMockFlowCredentialTypeNotServed(t *testing.T) {
@@ -400,11 +400,11 @@ func TestMockFlowCredentialTypeNotServed(t *testing.T) {
 	} {
 		_, err := f.client.InitiateRemoteAttestation(ctx, c.target, c.credentialType)
 		var estErr est.Error
-		if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusNotAcceptable {
-			t.Fatalf("attest-initiate for %s with %s: %v, want 406", c.target, c.credentialType, err)
+		if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusForbidden {
+			t.Fatalf("attest-initiate for %s with %s: %v, want 403", c.target, c.credentialType, err)
 		}
 		if !strings.Contains(err.Error(), "served:") {
-			t.Fatalf("the 406 body names no served Credential Types: %v", err)
+			t.Fatalf("the 403 body names no served Credential Types: %v", err)
 		}
 	}
 	// a Target the server does not serve is a resource it does not have: 404

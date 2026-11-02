@@ -66,6 +66,16 @@ const (
 	CredentialTypeWIT    = "wit"     // POP_CREDENTIAL_TYPE_WIT
 )
 
+// KnownCredentialType reports whether t is one of the Credential Type tokens the EST profile defines. A request that
+// names another token is malformed (400); a known token the RATS Relying Party does not serve is 403.
+func KnownCredentialType(t string) bool {
+	switch t {
+	case CredentialTypeJWT, CredentialTypePSK, CredentialTypeAPIKey, CredentialTypeX509, CredentialTypeWIC, CredentialTypeWIT, CredentialTypePrivateKey:
+		return true
+	}
+	return false
+}
+
 // Request-level CSR and CEK association methods.
 const (
 	// BindingInput identifies the direct-form binding of TACRA's Section

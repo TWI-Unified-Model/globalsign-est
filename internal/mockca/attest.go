@@ -152,6 +152,13 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 		}
 	}
 
+	if credentialType != "" && !est.KnownCredentialType(credentialType) {
+		// A token the profile does not define is a malformed request (the draft, Error Handling: 400).
+		return TargetPolicy{}, caError{
+			status: http.StatusBadRequest,
+			desc:   fmt.Sprintf("credential type %q is not a token of the profile", credentialType),
+		}
+	}
 	if credentialType != "" && len(policy.CredentialTypes) > 0 {
 		supported := false
 		for _, ct := range policy.CredentialTypes {
@@ -161,10 +168,10 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 			}
 		}
 		if !supported {
-			// Not an authorization matter, a Credential Type this RATS Relying Party does not serve for the Target:
-			// 406, and the body names the ones it serves (draft, Error Handling).
+			// A Credential Type this RATS Relying Party does not serve for the Target: 403, and the body names
+			// the ones it serves (the draft, Error Handling).
 			return TargetPolicy{}, caError{
-				status: http.StatusNotAcceptable,
+				status: http.StatusForbidden,
 				desc: fmt.Sprintf("credential type %q is not served for target %q; served: %s",
 					credentialType, target, strings.Join(policy.CredentialTypes, ", ")),
 			}
@@ -310,10 +317,11 @@ func (ca *AttestedCA) consumeHandle(target, credentialType string, handle []byte
 			desc:   "handle was not issued for this target",
 		}
 	}
-	if state.credentialType != credentialType {
+	if state.credentialType != "" && state.credentialType != credentialType {
+		// The draft: a type attest-initiate named must come back on the second leg; a type it omitted may be named.
 		return caError{
 			status: http.StatusBadRequest,
-			desc:   "handle was not issued for this credential type",
+			desc:   fmt.Sprintf("handle was issued for credential type %q", state.credentialType),
 		}
 	}
 
@@ -489,9 +497,12 @@ func (ca *AttestedCA) EnrollCredential(
 	switch req.CredentialType {
 	case "", est.CredentialTypeX509:
 	case est.CredentialTypeWIC:
-		return nil, caError{status: http.StatusNotAcceptable, desc: "the draft mints a wic at enrollment, this mock does not yet; served: x509"}
+		return nil, caError{status: http.StatusForbidden, desc: "the draft mints a wic at enrollment, this mock does not yet; served: x509"}
 	default:
-		return nil, caError{status: http.StatusNotAcceptable, desc: fmt.Sprintf("credential type %q is not minted by enrollment; served: x509", req.CredentialType)}
+		if !est.KnownCredentialType(req.CredentialType) {
+			return nil, caError{status: http.StatusBadRequest, desc: fmt.Sprintf("credential type %q is not a token of the profile", req.CredentialType)}
+		}
+		return nil, caError{status: http.StatusForbidden, desc: fmt.Sprintf("credential type %q is not minted by enrollment; served: x509", req.CredentialType)}
 	}
 
 	if len(req.CSR) == 0 {
@@ -541,7 +552,7 @@ func groupID(res *attestationResults, profile, credentialHint string) string {
 // vaultBundle returns the pre-provisioned credential of credentialType for a group, minting it on first use. Replica
 // workloads sharing a group receive the same credential. The mock Secret Vault releases x509 (the certificate, its
 // private key as a private-key item, and the CA chain as x509 items with the purpose "ca"), api-key (a hex token) and
-// psk (32 key octets); a request that names another Credential Type is refused with 406, as the draft says, and one
+// psk (32 key octets); a request that names another Credential Type is refused with 403, as the draft says, and one
 // that names none is given x509. Every value is the unpadded base64url of the credential's octets, as the draft says.
 func (ca *AttestedCA) vaultBundle(
 	ctx context.Context,
@@ -585,8 +596,11 @@ func (ca *AttestedCA) vaultBundle(
 		ca.mu.Unlock()
 		return bundle, nil
 	default:
+		if !est.KnownCredentialType(credentialType) {
+			return nil, caError{status: http.StatusBadRequest, desc: fmt.Sprintf("credential type %q is not a token of the profile", credentialType)}
+		}
 		return nil, caError{
-			status: http.StatusNotAcceptable,
+			status: http.StatusForbidden,
 			desc:   fmt.Sprintf("credential type %q is not released by this Secret Vault; served: x509, api-key, psk", credentialType),
 		}
 	}

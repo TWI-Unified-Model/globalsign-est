@@ -181,8 +181,9 @@ leg of an acquisition is a `GET`:
     {"freshness_kind":"absent-timestamp","max_age":120,"acceptable_evidence":["application/eat+cwt; eat_profile=\"https://twi.confidentialcomputing.io/tacra-est-mock/1.0.0\""],"acceptable_cek":["MLKEM768-P256+HKDF-SHA256+AES-256-GCM","DHKEM(P-256, HKDF-SHA256)+HKDF-SHA256+AES-256-GCM"],"mode":"retrieve"}
 
 A Target the configuration does not name is refused with 404, and a
-`credential_type` its policy does not list with 406, the body naming the
-ones it serves, as the draft says. A request that names no `credential_type`
+`credential_type` its policy does not list with 403, the body naming the
+ones it serves, and a token the profile does not define with 400, as the
+draft says. A request that names no `credential_type`
 takes what the policy gives: x509 at enrollment, x509 at retrieval. Named,
 the type is released or refused: the mock Secret Vault releases `x509` (the
 certificate as an `x509` item, its key as a `private-key` item, the CA chain
