@@ -391,9 +391,10 @@ func TestMockFlowRetrieve(t *testing.T) {
 }
 
 // TestMockFlowCredentialTypeNotSupported: a credential_type the RATS Relying
-// Party does not support for the Target is refused with 403, at attest-initiate
+// Party does not support for the Target is refused with 422, at attest-initiate
 // and on the second leg alike, and the body names the ones it supports; a wic
-// this mock does not mint yet.
+// this mock does not mint yet. On the second leg the attestation comes first:
+// Evidence that fails appraisal is refused with 403 whatever the type asked.
 func TestMockFlowCredentialTypeNotSupported(t *testing.T) {
 	f := newMockFlow(t)
 	kind := est.FreshnessPresentNonce
@@ -405,11 +406,11 @@ func TestMockFlowCredentialTypeNotSupported(t *testing.T) {
 	} {
 		_, err := f.client.InitiateRemoteAttestation(ctx, c.target, c.credentialType, "")
 		var estErr est.Error
-		if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusForbidden {
-			t.Fatalf("attest-initiate for %s with %s: %v, want 403", c.target, c.credentialType, err)
+		if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusUnprocessableEntity {
+			t.Fatalf("attest-initiate for %s with %s: %v, want 422", c.target, c.credentialType, err)
 		}
 		if !strings.Contains(err.Error(), "supported:") {
-			t.Fatalf("the 403 body names no supported credential types: %v", err)
+			t.Fatalf("the 422 body names no supported credential types: %v", err)
 		}
 	}
 	// a Target the server does not serve is a resource it does not have: 404
@@ -430,6 +431,21 @@ func TestMockFlowCredentialTypeNotSupported(t *testing.T) {
 	var estErr est.Error
 	if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusBadRequest {
 		t.Fatalf("attest-retrieve with a credential_type its attest-initiate did not carry: %v, want 400", err)
+	}
+	// an attest-initiate without a type lets the second leg name one: a type the
+	// Target does not support is 422, but only after the Evidence passed; the
+	// same request with Evidence that fails appraisal is 403
+	handle = f.handle(t, target, "", kind)
+	_, err = f.retrieveAs(kind, est.CredentialTypePSK, nil, handle, cekPub, f.evidence(t, kind, handle, target, cekPub))
+	if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "supported:") {
+		t.Fatalf("attest-retrieve with a credential_type the Target does not support, Evidence good: %v, want 422 naming the supported types", err)
+	}
+	handle = f.handle(t, target, "", kind)
+	bad := f.evidence(t, kind, handle, target, cekPub)
+	bad[len(bad)-1] ^= 0xff
+	_, err = f.retrieveAs(kind, est.CredentialTypePSK, nil, handle, cekPub, bad)
+	if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusForbidden {
+		t.Fatalf("attest-retrieve with a credential_type the Target does not support, Evidence bad: %v, want 403 (attestation first)", err)
 	}
 }
 
