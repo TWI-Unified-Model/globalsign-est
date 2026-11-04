@@ -139,7 +139,7 @@ func TestWireLogRecordsTheExchange(t *testing.T) {
 		}
 	}
 	// what each refusal was, so that the cases test what they say
-	for i, st := range []int{http.StatusForbidden, http.StatusForbidden, http.StatusUnsupportedMediaType,
+	for i, st := range []int{http.StatusNotFound, http.StatusNotFound, http.StatusUnsupportedMediaType,
 		http.StatusRequestEntityTooLarge} {
 		if lines[i].Status != st {
 			t.Errorf("%s: status %d, want %d", cases[i].name, lines[i].Status, st)

@@ -7,7 +7,7 @@ import (
 )
 
 // B64URL is a byte string of the attested-acquisition envelopes. JSON carries it as a text string holding its unpadded
-// base64url encoding (RFC 4648, Section 5), as the wire format proposed for draft-novak-lamps-tacra-est says in CDDL
+// base64url encoding (RFC 4648, Section 5), as draft-novak-lamps-tacra-est defines in CDDL
 // with the control .b64u of RFC 9741; a plain []byte would carry padded standard base64.
 type B64URL []byte
 

@@ -19,14 +19,14 @@ import (
 	"github.com/globalsign/est"
 )
 
-// The conduit's drills (RRP.ConduitAttack): what this server does, as TACRA's untrusted conduit, against an RRP in a
+// The conduit's drills (RATS Relying Party.ConduitAttack): what this server does, as TACRA's untrusted conduit, against a RATS Relying Party in a
 // drill of the bench. Each act is one line of the conduit log, "conduit attack NAME: Enrollment|Retrieval for
 // TARGET: …", which the bench's verdict reads.
 const conduitVerifier = "verifier"
 
 // conduit is the attacking conduit of a drill: a verifier key of its own, and the log of what it did.
 type conduit struct {
-	key  *ecdsa.PrivateKey // the conduit's own verifier key: one no RRP was provisioned with
+	key  *ecdsa.PrivateKey // the conduit's own verifier key: one no RATS Relying Party was provisioned with
 	spki string            // SHA-256 of its SubjectPublicKeyInfo, hex, for the record
 	mu   sync.Mutex
 	log  io.Writer

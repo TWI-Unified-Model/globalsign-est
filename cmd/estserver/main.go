@@ -263,7 +263,7 @@ func main() {
 	}
 
 	// Wrap the mock CA with mock attested credential acquisition support, or
-	// use the backend that forwards to a deployed Verifier and RRPs.
+	// use the backend that forwards to a deployed Verifier and RATS Relying Parties.
 	var serverCA est.CA = ca
 	if cfg.Tacra != nil {
 		backend, err := tacra.New(*cfg.Tacra)

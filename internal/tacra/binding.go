@@ -5,13 +5,12 @@ import (
 	"encoding/binary"
 )
 
-// bindingValue is SHA-512 of the binding input of TACRA Section 4.5 as the group decided on 6 and 11 October 2026
-// (TheBankster/rats-tacra#20; TWI-Unified-Model/globalsign-est#4): the freshness element, the Target and the subject,
+// bindingValue is SHA-512 of the binding input of TACRA Section 4.5: the freshness element, the Target and the subject,
 // each preceded by its length as a 32-bit big-endian integer; no Relying Party identifier and no server identifier.
 //
 //	binding_input = len32(handle) || handle || len32(target) || target || len32(subject) || subject
 //
-// It is the nonce of the Verifier's session, which the Verifier finds in the Evidence and the RRP recomputes. The
+// It is the nonce of the Verifier's session, which the Verifier finds in the Evidence and the RATS Relying Party recomputes. The
 // mock's est.BindingDigest computes the same octets (binding_test.go).
 func bindingValue(handle []byte, target string, subject []byte) []byte {
 	var in []byte

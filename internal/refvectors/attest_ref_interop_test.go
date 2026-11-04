@@ -15,7 +15,7 @@ import (
 
 // The messages of the reference implementation of draft-novak-lamps-tacra-est (tacra-est, Python), as one of its
 // runs on GCP SEV-SNP hardware recorded them (evidence/20261001T165956Z-gcp-sev-snp/vectors.json at tacra-est
-// 4c0efbc): the envelopes of the draft's CDDL, every bstr as unpadded base64url.
+// 4c0efbc): the envelopes of the profile's CDDL, every bstr as unpadded base64url.
 const refVectors = "testdata/tacra-est-ref-vectors-sev-snp.json"
 
 type refVectorFile struct {

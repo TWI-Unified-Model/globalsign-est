@@ -16,7 +16,7 @@ import (
 )
 
 // signedJWS is a compact JWS over header and payload, signed ES256 by key, the way the verifier signs its Attestation
-// Results and the RRP gateway checks them.
+// Results and the RATS Relying Party gateway checks them.
 func signedJWS(t *testing.T, key *ecdsa.PrivateKey, header, payload string) string {
 	t.Helper()
 	h := base64.RawURLEncoding.EncodeToString([]byte(header))
@@ -104,7 +104,7 @@ func TestNewTakesTheDrillInPassportAlone(t *testing.T) {
 	cfg := func(attack, model string) Config {
 		return Config{
 			Verifiers: map[string]Verifier{"veraison": {URL: "https://" + closedPort(t), CA: ca, Provider: "sev_guest"}},
-			RRPs: map[string]RRP{"ca": {URL: "https://" + closedPort(t), CA: ca,
+			RelyingParties: map[string]RelyingParty{"ca": {URL: "https://" + closedPort(t), CA: ca,
 				Mode: est.MechanismEnroll, Verifiers: []string{"veraison"}, RATSModel: model, ConduitAttack: attack}},
 			Targets:            map[string]string{"https://db-none.tacra.example": "ca"},
 			AcceptableEvidence: []string{"application/vnd.veraison.tsm-report+cbor"},

@@ -23,7 +23,7 @@ import (
 // leg locally and must not call this method.
 func (c *Client) InitiateRemoteAttestation(
 	ctx context.Context,
-	target, credentialType string,
+	target, credentialType, credentialHint string,
 ) (*AttestationInitiateResponse, error) {
 	endpoint := attestInitiateEndpoint
 
@@ -33,6 +33,9 @@ func (c *Client) InitiateRemoteAttestation(
 	}
 	if credentialType != "" {
 		q.Set(attestCredentialTypeParam, credentialType)
+	}
+	if credentialHint != "" {
+		q.Set(attestCredentialHintParam, credentialHint)
 	}
 	if len(q) > 0 {
 		endpoint += "?" + q.Encode()
