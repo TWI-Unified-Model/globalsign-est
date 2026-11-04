@@ -18,6 +18,6 @@ Application estserver is a basic EST server for testing purposes. It provisions
 credentials with the mock CA of this fork or, with a tacra section in its
 configuration, through the attested resources of draft-novak-lamps-tacra-est
 with the TACRA backend (internal/tacra), which forwards to deployed verifiers
-and RRPs; estserver.json.example shows that configuration.
+and RelyingParties; estserver.json.example shows that configuration.
 */
 package main

@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// The attest-initiate response the EST server makes of an RRP gateway's answer: the members the CDDL of the proposed
-// wire format (attestation-initiation-response) gives the answer's Freshness Kind and mode, never the RRP identifier,
-// and a refusal of an answer that breaks the rule of the Handle. The answers are as the RRP gateways of a GCP SEV-SNP
+// The attest-initiate response the EST server makes of a RATS Relying Party gateway's answer: the members the CDDL of the proposed
+// wire format (attestation-initiation-response) gives the answer's Freshness Kind and mode, never the RATS Relying Party identifier,
+// and a refusal of an answer that breaks the rule of the Handle. The answers are as the RATS Relying Party gateways of a GCP SEV-SNP
 // run gave them, with members added that the kind or the mode does not take.
 
 func TestInitiationResponse(t *testing.T) {
@@ -69,7 +69,7 @@ func TestInitiationResponse(t *testing.T) {
 			t.Errorf("%s: members %v, want %v (%s)", c.name, got, c.members, raw)
 		}
 		if c.g.Handle != "" && string(m["handle"]) != `"`+c.g.Handle+`"` {
-			t.Errorf("%s: handle %s, want the RRP's %q", c.name, m["handle"], c.g.Handle)
+			t.Errorf("%s: handle %s, want the RATS Relying Party's %q", c.name, m["handle"], c.g.Handle)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -49,7 +50,20 @@ func post(h http.Handler, path, ctype string, body []byte) *httptest.ResponseRec
 	return rec
 }
 
-const unsupportedTarget = "404 Target not served\n"
+// unsupportedTarget marks a case whose answer is the backend's 404 for the Target the request names: none of the
+// test's Targets is configured. refusedTarget gives the message for a body.
+const unsupportedTarget = "404 Target not supported\n"
+
+func refusedTarget(t *testing.T, body []byte) string {
+	t.Helper()
+	var m struct {
+		Target string `json:"target"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("request body: %v", err)
+	}
+	return "404 Target " + strconv.Quote(m.Target) + " not supported\n"
+}
 
 func TestAttestMediaTypes(t *testing.T) {
 	h := router(t, nil)
@@ -78,9 +92,9 @@ func TestAttestMediaTypes(t *testing.T) {
 			} {
 				got := post(h, path, c.ctype, r.body)
 				if c.taken {
-					if got.Code != http.StatusNotFound || got.Body.String() != unsupportedTarget {
+					if want := refusedTarget(t, r.body); got.Code != http.StatusNotFound || got.Body.String() != want {
 						t.Errorf("%s as %q: %d %q, want the backend's %q", path, c.ctype, got.Code, got.Body.String(),
-							unsupportedTarget)
+							want)
 					}
 					continue
 				}
@@ -225,8 +239,12 @@ func TestAttestRequestSyntax(t *testing.T) {
 	}
 	for _, c := range cases {
 		for _, path := range []string{"/.well-known/est/" + c.path, "/.well-known/est/arbitraryLabel1/" + c.path} {
-			if got := post(h, path, c.ctype, c.body); got.Body.String() != c.want {
-				t.Errorf("%s, %s: %d %q, want %q", c.name, path, got.Code, got.Body.String(), c.want)
+			want := c.want
+			if want == unsupportedTarget {
+				want = refusedTarget(t, c.body)
+			}
+			if got := post(h, path, c.ctype, c.body); got.Body.String() != want {
+				t.Errorf("%s, %s: %d %q, want %q", c.name, path, got.Code, got.Body.String(), want)
 			}
 		}
 	}

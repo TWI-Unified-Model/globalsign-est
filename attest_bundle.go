@@ -1,7 +1,7 @@
 package est
 
-// The EncryptedCredentialBundle of the EST profile (draft-novak-lamps-tacra-est, Response: EncryptedCredentialBundle;
-// issue #15 of the draft, 28 and 29 October 2026), as TACRA's "Sealing the Released Credential" constructs it: HPKE in
+// The EncryptedCredentialBundle of the EST profile (draft-novak-lamps-tacra-est, Response: EncryptedCredentialBundle),
+// as TACRA's "Sealing the Released Credential" constructs it: HPKE in
 // base mode (RFC 9180) to CEKpub, under one of two suites. The EST client and server saw CEKpub and could seal a
 // container to it themselves: the profile accepts that risk, states it in its Security Considerations, and carries no
 // origin authentication in this version.
@@ -288,7 +288,7 @@ var (
 
 // Open checks the container, its suite and the associated data against what the Attester bound, then decrypts under
 // the CEK. Who sealed the container it cannot tell: a container anyone sealed to CEKpub opens, which is the profile's
-// accepted risk (Security Considerations of the draft). cekPub is CEKpub as the request carried it.
+// accepted risk (Security Considerations of the profile). cekPub is CEKpub as the request carried it.
 func (b *EncryptedCredentialBundle) Open(
 	cekPriv crypto.PrivateKey,
 	cekPub []byte,

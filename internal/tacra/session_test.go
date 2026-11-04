@@ -10,7 +10,7 @@ import (
 )
 
 // The sessions the EST server keeps between attest-initiate and the second leg. The case that showed the fault, an
-// attack run of 7 October 2026: attest-initiate for https://db-epoch.tacra.example (x509) and then for
+// attack run: attest-initiate for https://db-epoch.tacra.example (x509) and then for
 // https://ledger-epoch.tacra.example (api-key) returned the same Handle, the deployment's epoch, and the Enrollment
 // at db-epoch that followed was refused (403) because the second session had replaced the first.
 
@@ -73,16 +73,16 @@ func TestExpiredOrUnknown(t *testing.T) {
 		}
 	}
 	if got := status(b.correlateKey(est.FreshnessAbsentNone, "", "https://db-none.tacra.example", "x509", "")); got != http.StatusOK {
-		t.Fatalf("a kind without a Handle: %d, want 200 (the RRP checks it)", got)
+		t.Fatalf("a kind without a Handle: %d, want 200 (the RATS Relying Party checks it)", got)
 	}
 }
 
 // A second leg refused for its Evidence format (415) leaves its Handle to the next request: the server checks the format
-// before it correlates the Handle, as the draft's processing validates the media type first.
+// before it correlates the Handle, as the profile's processing validates the media type first.
 func TestFormatRefusalLeavesTheHandle(t *testing.T) {
 	const target = "https://db-nonce.tacra.example"
 	b := &Backend{sessions: map[string][]session{},
-		cfg: Config{RRPs: map[string]RRP{"ca": {Mode: est.MechanismEnroll}},
+		cfg: Config{RelyingParties: map[string]RelyingParty{"ca": {Mode: est.MechanismEnroll}},
 			Targets: map[string]string{target: "ca"}, AcceptableEvidence: []string{"application/vnd.veraison.tsm-report+cbor"}}}
 	handle := []byte("a present-nonce Handle of 32 o.")
 	b.remember(hex.EncodeToString(handle), session{target, "x509", "", "ca", est.FreshnessPresentNonce, time.Now().Add(time.Minute)})

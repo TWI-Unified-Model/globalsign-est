@@ -143,8 +143,8 @@ Relying Party expects, in one of two modes.
 | `/.well-known/est/attest-enroll` | `POST application/est-attest-enroll+json`: a CSR and Evidence bound to it | the certificate, `application/pkcs7-mime` base64 (as simpleenroll) |
 | `/.well-known/est/attest-retrieve` | `POST application/est-attest-retrieve+json`: a CEK public key and Evidence bound to it | `application/est-attest-bundle+json`: the credential in a container sealed to the CEK (`hpke-base`, HPKE in base mode under DHKEM(P-256) or MLKEM768-P256, the suite following the encoding of CEKpub)) |
 
-Every request is checked against the draft's syntax before anything else
-(`attest_syntax.go`); a request the draft does not describe is refused
+Every request is checked against the profile's syntax before anything else
+(`attest_syntax.go`); a request the profile does not describe is refused
 with 400 and a reason. The server runs with one of two backends.
 
 ### The mock backend: a mock CA, a mock TEE and a mock Verifier
@@ -182,15 +182,14 @@ leg of an acquisition is a `GET`:
 
 A Target the configuration does not name is refused with 404, and a
 `credential_type` its policy does not list with 403, the body naming the
-ones it serves, and a token the profile does not define with 400, as the
-draft says. A request that names no `credential_type`
+ones it supports, and a credential type the profile does not define with 400.
+A request that names no `credential_type`
 takes what the policy gives: x509 at enrollment, x509 at retrieval. Named,
 the type is released or refused: the mock Secret Vault releases `x509` (the
 certificate as an `x509` item, its key as a `private-key` item, the CA chain
 as `x509` items with the purpose `ca`), `api-key` (a hex token) and `psk`;
-every item's value is the unpadded base64url of the credential's octets, as
-the draft says. It does not mint a `wic` at enrollment yet, which the draft
-allows. A request to the resource of the other mode, `attest-enroll` for a
+every item's value is the unpadded base64url of the credential's octets. It
+does not mint a `wic` at enrollment yet, which the profile allows. A request to the resource of the other mode, `attest-enroll` for a
 Target provisioned by retrieval, is refused with 400. The second leg needs
 Evidence: the library makes the mock TEE's (`est.NewMockEvidence`,
 signed with `provider.key`) and the client sends it (`est.Client`'s
@@ -204,31 +203,32 @@ certificate, its key and the CA chain it releases, under either suite:
     user@host:$ go test -run TestMockFlow .
     ok      github.com/globalsign/est       0.438s
 
-### The TACRA backend: deployed Verifiers and RRPs
+### The TACRA backend: deployed Verifiers and RATS Relying Parties
 
 For a deployment. With a `tacra` section the server has no CA of its own: it
-is the CAS of the draft, an untrusted conduit between the Attester and the
-Verifiers and RATS-unaware Relying Parties (RRPs) it is configured with.
+is the CAS of the profile, an untrusted conduit between the Attester and the
+Verifiers and RATS Relying Parties (Credential Authorities and Secret Vaults)
+it is configured with.
 `estserver.json.example` shows the shape; the keys are:
 
 - `tls`: required, with `client_cas`; the resources are reached over mutual
   TLS.
 - `tacra.client_cert`, `tacra.client_key`: this server's certificate on its
-  calls to the Verifiers and the RRPs, which take only callers they know.
+  calls to the Verifiers and the RATS Relying Parties, which take only callers they know.
 - `tacra.verifiers`: by name, `url`, `ca` (of its TLS certificate) and
   `provider`, the TSM report provider of the Evidence it appraises
   (`sev_guest`, `tdx_guest`).
 - `tacra.rrps`: by name, `url`, `ca`, `mode` (`enroll` for a Credential
   Authority, `retrieve` for a Secret Vault), `rats_model` (`passport`: this
-  server obtains the Attestation Results from the Verifier the RRP's policy
-  names in `verifiers`; `background-check`: the RRP obtains them from the
+  server obtains the Attestation Results from the Verifier the RATS Relying Party's policy
+  names in `verifiers`; `background-check`: the RATS Relying Party obtains them from the
   Evidence this server forwards).
-- `tacra.targets`: each Target the server serves, and the RRP that provisions
+- `tacra.targets`: each Target the server supports, and the RATS Relying Party that provisions
   it.
 - `tacra.acceptable_evidence`: the Evidence media types attest-initiate
   offers (`application/vnd.veraison.tsm-report+cbor` for SEV-SNP and TDX
   reports through configfs-tsm).
-- `tacra.ca_certs`: the PEM chain served at `/cacerts`.
+- `tacra.ca_certs`: the PEM chain returned at `/cacerts`.
 - `wire_log` (optional, at the top level): a file where every attest-*
   exchange is written as it crossed the wire, one JSON object per line.
 
@@ -236,6 +236,6 @@ The configuration is decoded strictly: an unknown member, or the mock
 backend's `mock_ca` and `attest` sections beside `tacra`, is an error at
 start. The backend's tests (`internal/tacra`) cover the wire syntax, the
 binding, the sessions and the conduit in process, and the backend's answers
-when a Verifier or an RRP cannot be reached; `internal/refvectors` checks the
+when a Verifier or a RATS Relying Party cannot be reached; `internal/refvectors` checks the
 library's messages against the vectors a reference implementation recorded
 on Google Cloud SEV-SNP hardware.

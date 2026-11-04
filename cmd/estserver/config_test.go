@@ -25,8 +25,8 @@ func TestSampleAndExample(t *testing.T) {
 	if cfg, err = parseConfig(example); err != nil {
 		t.Fatalf("example: %v", err)
 	}
-	if cfg.Tacra == nil || len(cfg.Tacra.Verifiers) == 0 || len(cfg.Tacra.RRPs) == 0 || len(cfg.Tacra.Targets) == 0 {
-		t.Fatal("the example is the TACRA backend's configuration: a tacra section with verifiers, RRPs and Targets")
+	if cfg.Tacra == nil || len(cfg.Tacra.Verifiers) == 0 || len(cfg.Tacra.RelyingParties) == 0 || len(cfg.Tacra.Targets) == 0 {
+		t.Fatal("the example is the TACRA backend's configuration: a tacra section with verifiers, RATS Relying Parties and Targets")
 	}
 }
 
@@ -65,10 +65,10 @@ func TestRefused(t *testing.T) {
 		{"the tacra section without tls", changed(t, example, func(m map[string]any) { delete(m, "tls") }), "no tls section"},
 		{"the tacra section without a server key", changed(t, example, func(m map[string]any) { delete(section(m, "tls"), "private_key") }),
 			"tls: listen_address, certificates and private_key are required"},
-		{"an RRP's field misspelt", changed(t, example, func(m map[string]any) {
-			rrp := section(section(section(m, "tacra"), "rrps"), "ca")
-			rrp["rrpid"] = rrp["rrp_id"]
-			delete(rrp, "rrp_id")
+		{"a RATS Relying Party's field misspelt", changed(t, example, func(m map[string]any) {
+			relyingParty := section(section(section(m, "tacra"), "rrps"), "ca")
+			relyingParty["rrpid"] = relyingParty["rrp_id"]
+			delete(relyingParty, "rrp_id")
 		}), `unknown field "rrpid"`},
 		{"a field the server does not know", changed(t, []byte(sample), func(m map[string]any) { m["mock-ca"] = m["mock_ca"] }),
 			`unknown field "mock-ca"`},

@@ -23,7 +23,7 @@ import (
 	"github.com/globalsign/est"
 )
 
-// The EST server's answers when what stands behind it does not answer: an RRP it cannot reach (502, Bad Gateway) and,
+// The EST server's answers when what stands behind it does not answer: a RATS Relying Party it cannot reach (502, Bad Gateway) and,
 // in the Passport model, a verifier it cannot reach (503, Service Unavailable). Each is a real failure, a TCP port
 // that nothing listens on, reached through the TLS clients the server builds from its configuration.
 
@@ -69,7 +69,7 @@ func TestUnreachable(t *testing.T) {
 	const target = "https://db-none.tacra.example"
 	b, err := New(Config{
 		Verifiers: map[string]Verifier{"veraison": {URL: "https://" + closedPort(t), CA: ca, Provider: "sev_guest"}},
-		RRPs: map[string]RRP{"ca": {URL: "https://" + closedPort(t), CA: ca,
+		RelyingParties: map[string]RelyingParty{"ca": {URL: "https://" + closedPort(t), CA: ca,
 			Mode: est.MechanismEnroll, Verifiers: []string{"veraison"}}},
 		Targets:            map[string]string{target: "ca"},
 		AcceptableEvidence: []string{"application/vnd.veraison.tsm-report+cbor"},
@@ -85,8 +85,8 @@ func TestUnreachable(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
 		"/.well-known/est/attest-initiate?credential_type=x509&target=https%3A%2F%2Fdb-none.tacra.example", nil))
-	if got, want := rec.Body.String(), "502 RRP ca unreachable\n"; rec.Code != http.StatusBadGateway || got != want {
-		t.Errorf("attest-initiate with the RRP down: %d %q, want %q", rec.Code, got, want)
+	if got, want := rec.Body.String(), "502 RATS Relying Party ca unreachable\n"; rec.Code != http.StatusBadGateway || got != want {
+		t.Errorf("attest-initiate with the RATS Relying Party down: %d %q, want %q", rec.Code, got, want)
 	}
 
 	// An absent-none Enrollment, which needs no attest-initiate: the server reads the Evidence's TSM provider to choose

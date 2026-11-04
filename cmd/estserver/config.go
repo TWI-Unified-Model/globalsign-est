@@ -29,7 +29,7 @@ import (
 
 // config contains the EST server configuration. The server runs with the mock
 // CA of this fork (mock_ca, attest; transient when absent) or, with a tacra
-// section, with the TACRA backend that forwards to deployed verifiers and RRPs
+// section, with the TACRA backend that forwards to deployed verifiers and RATS Relying Parties
 // (internal/tacra; estserver.json.example): one or the other, not both. A
 // configuration is decoded strictly: an unknown field is an error.
 type config struct {
@@ -37,7 +37,7 @@ type config struct {
 	TLS                 *tlsConfig    `json:"tls,omitempty"`
 	AllowedHosts        []string      `json:"allowed_hosts,omitempty"`
 	Attest              *attestConfig `json:"attest,omitempty"`
-	Tacra               *tacra.Config `json:"tacra,omitempty"` // the deployed verifiers and RRPs, instead of the mock
+	Tacra               *tacra.Config `json:"tacra,omitempty"` // the deployed verifiers and RATS Relying Parties, instead of the mock
 	HealthCheckPassword string        `json:"healthcheck_password"`
 	RateLimit           int           `json:"rate_limit"`
 	Timeout             int           `json:"timeout"`

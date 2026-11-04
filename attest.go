@@ -66,8 +66,9 @@ const (
 	CredentialTypeWIT    = "wit"     // POP_CREDENTIAL_TYPE_WIT
 )
 
-// KnownCredentialType reports whether t is one of the Credential Type tokens the EST profile defines. A request that
-// names another token is malformed (400); a known token the RATS Relying Party does not serve is 403.
+// KnownCredentialType reports whether t is one of the credential types the EST profile defines. A request that
+// names another credential type is malformed (400); a known credential type the RATS Relying Party does not support
+// is 403.
 func KnownCredentialType(t string) bool {
 	switch t {
 	case CredentialTypeJWT, CredentialTypePSK, CredentialTypeAPIKey, CredentialTypeX509, CredentialTypeWIC, CredentialTypeWIT, CredentialTypePrivateKey:
@@ -80,7 +81,7 @@ func KnownCredentialType(t string) bool {
 const (
 	// BindingInput identifies the direct-form binding of TACRA's Section
 	// "Binding Credential Keys to Evidence": a single digest, carried in a
-	// guest-chosen Evidence field, over the freshness element, Target, RRP
+	// guest-chosen Evidence field, over the freshness element, Target, RATS Relying Party
 	// identifier and CSR/CEKpub (internal/tacra/binding.go). It is the method
 	// the attested requests name (Binding.Method).
 	BindingInput = "binding-input"
@@ -117,8 +118,8 @@ const (
 )
 
 // CredentialTypePrivateKey is the Credential Type of a private key shared by the instances of a replicated service,
-// released by Retrieval only (the draft, Credential Type Tokens). A credential item in the released bundle carries
-// one of the Credential Type tokens as its type.
+// released by Retrieval only. A credential item in the released bundle carries one of the credential types as its
+// type.
 const CredentialTypePrivateKey = "private-key"
 
 // AttestationCA is an optional interface which a CA backing an EST server may
@@ -128,20 +129,27 @@ const CredentialTypePrivateKey = "private-key"
 //
 // The three operations correspond to the caapi.v1.CredentialAcquisitionService
 // RPCs InitiateRemoteAttestation, EnrollCredential and RetrieveCredential.
+//
+// additionalPathSegment is the optional path segment of RFC 7030, Section
+// 3.2.2, under which the request arrived, or empty when there was none: the
+// segment under which an EST server fronts several Credential Authorities or
+// Secret Vaults. The server passes it to these operations as it does to the
+// operations of CA; an implementation may select the Credential Authority or
+// Secret Vault by it.
 type AttestationCA interface {
 	// InitiateRemoteAttestation obtains a Freshness kind, and a Handle if any,
 	// from the configured Verifier or Relying Party for the supplied target and
 	// credential type. It also reports the credential acquisition mechanism.
-	InitiateRemoteAttestation(ctx context.Context, target, credentialType, credentialHint, aps string, r *http.Request) (*AttestationInitiateResponse, error)
+	InitiateRemoteAttestation(ctx context.Context, target, credentialType, credentialHint, additionalPathSegment string, r *http.Request) (*AttestationInitiateResponse, error)
 
 	// EnrollCredential forwards Evidence to the Verifier and the CSR plus the
 	// resulting Attestation Results to the Credential Authority.
-	EnrollCredential(ctx context.Context, req *AttestedEnrollmentRequest, aps string, r *http.Request) (*x509.Certificate, error)
+	EnrollCredential(ctx context.Context, req *AttestedEnrollmentRequest, additionalPathSegment string, r *http.Request) (*x509.Certificate, error)
 
 	// RetrieveCredential forwards Evidence to the Verifier and the resulting
 	// Attestation Results to the Secret Vault, which encrypts the matching
 	// credential to CEKpub.
-	RetrieveCredential(ctx context.Context, req *AttestedRetrievalRequest, aps string, r *http.Request) (*EncryptedCredentialBundle, error)
+	RetrieveCredential(ctx context.Context, req *AttestedRetrievalRequest, additionalPathSegment string, r *http.Request) (*EncryptedCredentialBundle, error)
 }
 
 // AttestationInitiateResponse is returned by the attest-initiate resource. It
@@ -195,10 +203,10 @@ type AttestedRetrievalRequest struct {
 	CredentialHint *string `json:"credential_hint,omitempty"`
 }
 
-// CredentialItem is a single credential inside a decrypted bundle, the credential-item of the EST draft's CDDL: its
-// type, a Credential Type token, and its value, the unpadded base64url of the credential's octets: a DER certificate
+// CredentialItem is a single credential inside a decrypted bundle, the credential-item of the EST profile's CDDL: its
+// type, a credential type, and its value, the unpadded base64url of the credential's octets: a DER certificate
 // for x509 and wic, a DER PrivateKeyInfo for private-key, the key octets for psk, the UTF-8 of the token for wit, jwt
-// and api-key (the draft, Response: EncryptedCredentialBundle, 30 October 2026). Format names another encoding of
+// and api-key. Format names another encoding of
 // those octets when the Secret Vault's policy uses one; Purpose is one of the key-block attributes the policy sets,
 // here "ca" on a certificate of the chain.
 type CredentialItem struct {
@@ -500,8 +508,8 @@ func CEKThumbprint(cekPub []byte) []byte {
 
 // EncodeBindingInput returns the canonical octet string of the mock's binding
 // input: length-prefixed handle, target and subject, where each length is a
-// 32-bit big-endian octet count (no server identity since 6 October 2026,
-// rats-tacra#20; the TACRA backend keeps Section 4.5's own layout). handle is
+// 32-bit big-endian octet count (no server identity; the TACRA backend keeps
+// Section 4.5's own layout). handle is
 // empty for absent-none/absent-timestamp; subject is the CSR DER for
 // enrollment or the CEKpub SubjectPublicKeyInfo DER for retrieval. The length
 // prefixes make the concatenation unambiguous.
@@ -547,7 +555,7 @@ func writeJSONResponse(ctx context.Context, w http.ResponseWriter, contentType s
 // attestInitiate services the /attest-initiate endpoint.
 func attestInitiate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	aps := chi.URLParam(r, apsParamName)
+	additionalPathSegment := chi.URLParam(r, apsParamName)
 
 	aca := attestationCAFromContext(ctx)
 	if aca == nil {
@@ -560,7 +568,7 @@ func attestInitiate(w http.ResponseWriter, r *http.Request) {
 		r.URL.Query().Get(attestTargetParam),
 		r.URL.Query().Get(attestCredentialTypeParam),
 		r.URL.Query().Get(attestCredentialHintParam),
-		aps,
+		additionalPathSegment,
 		r,
 	)
 	if writeOnError(ctx, w, logMsgAttestInitiateFailed, err) {
@@ -573,7 +581,7 @@ func attestInitiate(w http.ResponseWriter, r *http.Request) {
 // attestEnroll services the /attest-enroll endpoint.
 func attestEnroll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	aps := chi.URLParam(r, apsParamName)
+	additionalPathSegment := chi.URLParam(r, apsParamName)
 
 	aca := attestationCAFromContext(ctx)
 	if aca == nil {
@@ -586,7 +594,7 @@ func attestEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cert, err := aca.EnrollCredential(ctx, &req, aps, r)
+	cert, err := aca.EnrollCredential(ctx, &req, additionalPathSegment, r)
 	if writeOnError(ctx, w, logMsgAttestEnrollFailed, err) {
 		return
 	}
@@ -597,7 +605,7 @@ func attestEnroll(w http.ResponseWriter, r *http.Request) {
 // attestRetrieve services the /attest-retrieve endpoint.
 func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	aps := chi.URLParam(r, apsParamName)
+	additionalPathSegment := chi.URLParam(r, apsParamName)
 
 	aca := attestationCAFromContext(ctx)
 	if aca == nil {
@@ -612,7 +620,7 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 
 	// A CA that forwards a container produced by its Secret Vault returns it as it is.
 	if raw, ok := aca.(RawRetriever); ok {
-		body, err := raw.RetrieveCredentialRaw(ctx, &req, aps, r)
+		body, err := raw.RetrieveCredentialRaw(ctx, &req, additionalPathSegment, r)
 		if writeOnError(ctx, w, logMsgAttestRetrieveFailed, err) {
 			return
 		}
@@ -620,7 +628,7 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bundle, err := aca.RetrieveCredential(ctx, &req, aps, r)
+	bundle, err := aca.RetrieveCredential(ctx, &req, additionalPathSegment, r)
 	if writeOnError(ctx, w, logMsgAttestRetrieveFailed, err) {
 		return
 	}
@@ -633,5 +641,5 @@ func attestRetrieve(w http.ResponseWriter, r *http.Request) {
 // revised EST profile): the EST server returns that container unchanged, as a
 // conduit, instead of re-encoding it as the mock's container type.
 type RawRetriever interface {
-	RetrieveCredentialRaw(ctx context.Context, req *AttestedRetrievalRequest, aps string, r *http.Request) ([]byte, error)
+	RetrieveCredentialRaw(ctx context.Context, req *AttestedRetrievalRequest, additionalPathSegment string, r *http.Request) ([]byte, error)
 }

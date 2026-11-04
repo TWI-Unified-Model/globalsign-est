@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// The syntax of the attested requests, as the wire format proposed for draft-novak-lamps-tacra-est defines their JSON
+// The syntax of the attested requests, as draft-novak-lamps-tacra-est defines their JSON
 // in CDDL:
 //
 //	attested-enrollment-request = { request-common, request-freshness, csr: text .b64u bytes }

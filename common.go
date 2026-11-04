@@ -37,8 +37,8 @@ const (
 )
 
 // Query parameter names for attest-initiate. TACRA requires the target and
-// credential type to be validated, which the EST draft's parameterless GET
-// cannot convey (what attest-initiate carries is TheBankster/rats-tacra#19).
+// credential type to be validated, which the EST profile's parameterless GET
+// cannot convey.
 const (
 	attestCredentialTypeParam = "credential_type"
 	attestCredentialHintParam = "credential_hint"

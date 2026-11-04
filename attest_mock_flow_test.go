@@ -28,7 +28,7 @@ import (
 // The mock path end to end, through the wire: attest-initiate, attest-enroll
 // and attest-retrieve for every Freshness Kind against this fork's mock CA,
 // mock TEE and mock Verifier, and the refusals a changed input meets. The
-// requests cross the wire as a client's do, so the draft's syntax rules apply
+// requests cross the wire as a client's do, so the profile's syntax rules apply
 // to them (attest_syntax.go).
 
 const (
@@ -390,11 +390,11 @@ func TestMockFlowRetrieve(t *testing.T) {
 	}
 }
 
-// TestMockFlowCredentialTypeNotServed: a credential_type the RATS Relying
-// Party does not serve for the Target is refused with 403, at attest-initiate
-// and on the second leg alike, and the body names the ones it serves; a wic,
-// which the draft mints at enrollment, this mock does not mint yet.
-func TestMockFlowCredentialTypeNotServed(t *testing.T) {
+// TestMockFlowCredentialTypeNotSupported: a credential_type the RATS Relying
+// Party does not support for the Target is refused with 403, at attest-initiate
+// and on the second leg alike, and the body names the ones it supports; a wic
+// this mock does not mint yet.
+func TestMockFlowCredentialTypeNotSupported(t *testing.T) {
 	f := newMockFlow(t)
 	kind := est.FreshnessPresentNonce
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -408,15 +408,15 @@ func TestMockFlowCredentialTypeNotServed(t *testing.T) {
 		if !errors.As(err, &estErr) || estErr.StatusCode() != http.StatusForbidden {
 			t.Fatalf("attest-initiate for %s with %s: %v, want 403", c.target, c.credentialType, err)
 		}
-		if !strings.Contains(err.Error(), "served:") {
-			t.Fatalf("the 403 body names no served Credential Types: %v", err)
+		if !strings.Contains(err.Error(), "supported:") {
+			t.Fatalf("the 403 body names no supported credential types: %v", err)
 		}
 	}
 	// a Target the server does not serve is a resource it does not have: 404
 	_, err := f.client.InitiateRemoteAttestation(ctx, "https://nobody.example", est.CredentialTypeX509, "")
 	var notFound est.Error
 	if !errors.As(err, &notFound) || notFound.StatusCode() != http.StatusNotFound {
-		t.Fatalf("attest-initiate for a Target not served: %v, want 404", err)
+		t.Fatalf("attest-initiate for a Target not supported: %v, want 404", err)
 	}
 	// a type the initiate did not carry is a mismatch with the attest-initiate: 400
 	target := flowRetrieveTarget(kind)
@@ -444,7 +444,7 @@ func TestMockFlowRetrieveX509Credential(t *testing.T) {
 	kind := est.FreshnessPresentNonce
 	bundle, evidence, group := f.retrieveX509(t, kind, nil)
 
-	// the items, typed with the draft's Credential Type tokens: the certificate (x509), its private key (private-key)
+	// the items, typed with the profile's credential types: the certificate (x509), its private key (private-key)
 	// and the CA chain (x509 items with the purpose "ca"), every value the base64url of the credential's octets
 	var leaf, keyDER []byte
 	var chain []*x509.Certificate
@@ -606,7 +606,7 @@ func TestMockFlowAbsentTimestamp(t *testing.T) {
 
 // TestMockFlowCredentialHintCorrelated: a Credential Hint named at attest-initiate
 // must come back unchanged on the present-nonce second leg, and one that
-// attest-initiate omitted may be named there (the draft, 2 November 2026).
+// attest-initiate omitted may be named there.
 func TestMockFlowCredentialHintCorrelated(t *testing.T) {
 	f := newMockFlow(t)
 	kind := est.FreshnessPresentNonce
