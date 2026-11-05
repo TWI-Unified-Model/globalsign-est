@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -160,26 +161,21 @@ func (ca *AttestedCA) policyFor(target, credentialType string) (TargetPolicy, er
 			desc:   fmt.Sprintf("credential type %q is not one the profile defines", credentialType),
 		}
 	}
-	if credentialType != "" && len(policy.CredentialTypes) > 0 {
-		supported := false
-		for _, ct := range policy.CredentialTypes {
-			if ct == credentialType {
-				supported = true
-				break
-			}
-		}
-		if !supported {
-			// A Credential Type this RATS Relying Party does not support for the Target: 403, and the body names
-			// the ones it supports.
-			return TargetPolicy{}, caError{
-				status: http.StatusForbidden,
-				desc: fmt.Sprintf("credential type %q is not supported for target %q; supported: %s",
-					credentialType, target, strings.Join(policy.CredentialTypes, ", ")),
-			}
-		}
-	}
-
 	return policy, nil
+}
+
+// supportsType refuses a Credential Type the Target's policy does not list: 422, the body naming the ones it
+// supports. At attest-initiate it is checked at once; on the second leg only after the Evidence was appraised, so
+// that a failed attestation is refused with 403 whatever the Credential Type.
+func supportsType(policy TargetPolicy, target, credentialType string) error {
+	if credentialType == "" || len(policy.CredentialTypes) == 0 || slices.Contains(policy.CredentialTypes, credentialType) {
+		return nil
+	}
+	return caError{
+		status: http.StatusUnprocessableEntity,
+		desc: fmt.Sprintf("credential type %q is not supported for target %q; supported: %s",
+			credentialType, target, strings.Join(policy.CredentialTypes, ", ")),
+	}
 }
 
 // requireMechanism rejects a second-leg request to the resource of the other
@@ -226,6 +222,10 @@ func (ca *AttestedCA) InitiateRemoteAttestation(
 ) (*est.AttestationInitiateResponse, error) {
 	policy, err := ca.policyFor(target, credentialType)
 	if err != nil {
+		return nil, err
+	}
+	// at attest-initiate there is no Evidence yet: the Credential Type is checked at once
+	if err := supportsType(policy, target, credentialType); err != nil {
 		return nil, err
 	}
 
@@ -503,15 +503,8 @@ func (ca *AttestedCA) EnrollCredential(
 	if err := ca.requireMechanism(req.Target, req.CredentialType, est.MechanismEnroll); err != nil {
 		return nil, err
 	}
-	switch req.CredentialType {
-	case "", est.CredentialTypeX509:
-	case est.CredentialTypeWIC:
-		return nil, caError{status: http.StatusForbidden, desc: "wic is not minted by this mock yet; supported: x509"}
-	default:
-		if !est.KnownCredentialType(req.CredentialType) {
-			return nil, caError{status: http.StatusBadRequest, desc: fmt.Sprintf("credential type %q is not one the profile defines", req.CredentialType)}
-		}
-		return nil, caError{status: http.StatusForbidden, desc: fmt.Sprintf("credential type %q is not minted by enrollment; supported: x509", req.CredentialType)}
+	if req.CredentialType != "" && !est.KnownCredentialType(req.CredentialType) {
+		return nil, caError{status: http.StatusBadRequest, desc: fmt.Sprintf("credential type %q is not one the profile defines", req.CredentialType)}
 	}
 
 	if len(req.CSR) == 0 {
@@ -538,6 +531,23 @@ func (ca *AttestedCA) EnrollCredential(
 		return nil, err
 	}
 
+	// The Credential Type after the attestation: a request that failed attestation is refused with 403 whatever it
+	// asked for; one that passed and asks for a type this Credential Authority does not mint is refused with 422.
+	policy, err := ca.policyFor(req.Target, req.CredentialType)
+	if err != nil {
+		return nil, err
+	}
+	if err := supportsType(policy, req.Target, req.CredentialType); err != nil {
+		return nil, err
+	}
+	switch req.CredentialType {
+	case "", est.CredentialTypeX509:
+	case est.CredentialTypeWIC:
+		return nil, caError{status: http.StatusUnprocessableEntity, desc: "wic is not minted by this mock yet; supported: x509"}
+	default:
+		return nil, caError{status: http.StatusUnprocessableEntity, desc: fmt.Sprintf("credential type %q is not minted by enrollment; supported: x509", req.CredentialType)}
+	}
+
 	return ca.MockCA.Enroll(ctx, csr, additionalPathSegment, r)
 }
 
@@ -561,7 +571,7 @@ func groupID(res *attestationResults, profile, credentialHint string) string {
 // vaultBundle returns the pre-provisioned credential of credentialType for a group, minting it on first use. Replica
 // workloads sharing a group receive the same credential. The mock Secret Vault releases x509 (the certificate, its
 // private key as a private-key item, and the CA chain as x509 items with the purpose "ca"), api-key (a hex token) and
-// psk (32 key octets); a request that names another credential type is refused with 403, and one that names none is
+// psk (32 key octets); a request that names another credential type is refused with 422, and one that names none is
 // given x509, the policy of this mock. Every value is the unpadded base64url of the credential's octets.
 func (ca *AttestedCA) vaultBundle(
 	ctx context.Context,
@@ -609,7 +619,7 @@ func (ca *AttestedCA) vaultBundle(
 			return nil, caError{status: http.StatusBadRequest, desc: fmt.Sprintf("credential type %q is not one the profile defines", credentialType)}
 		}
 		return nil, caError{
-			status: http.StatusForbidden,
+			status: http.StatusUnprocessableEntity,
 			desc:   fmt.Sprintf("credential type %q is not released by this Secret Vault; supported: x509, api-key, psk", credentialType),
 		}
 	}
@@ -700,6 +710,15 @@ func (ca *AttestedCA) RetrieveCredential(
 		req.Target, req.CredentialType, hintOf(req.CredentialHint), req.FreshnessKind, req.Handle, req.Evidence, req.CEKPub,
 	)
 	if err != nil {
+		return nil, err
+	}
+
+	// the Credential Type after the attestation, as at enrollment
+	policy, err := ca.policyFor(req.Target, req.CredentialType)
+	if err != nil {
+		return nil, err
+	}
+	if err := supportsType(policy, req.Target, req.CredentialType); err != nil {
 		return nil, err
 	}
 
