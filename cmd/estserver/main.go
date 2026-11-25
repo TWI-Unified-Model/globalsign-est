@@ -40,9 +40,11 @@ import (
 
 	"github.com/globalsign/est"
 	"github.com/globalsign/est/internal/basiclogger"
+	"github.com/globalsign/est/internal/cas"
 	"github.com/globalsign/est/internal/mockca"
 	"github.com/globalsign/est/internal/tacra"
 	"github.com/globalsign/pemfile"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -226,7 +228,7 @@ func main() {
 	}
 
 	minTLS := uint16(tls.VersionTLS12)
-	if cfg.Tacra != nil {
+	if cfg.Tacra != nil || cfg.CredentialAcquisition != nil {
 		// the bank profile's CAS channel: TLS 1.3, as the reference implementation's EST server (tacra-est
 		// BANK-PROFILE, "TLS between the CAS client and server")
 		minTLS = tls.VersionTLS13
@@ -265,7 +267,13 @@ func main() {
 	// Wrap the mock CA with mock attested credential acquisition support, or
 	// use the backend that forwards to a deployed Verifier and RATS Relying Parties.
 	var serverCA est.CA = ca
-	if cfg.Tacra != nil {
+	if cfg.CredentialAcquisition != nil {
+		backend, err := cas.New(cfg.CredentialAcquisition, logrus.StandardLogger())
+		if err != nil {
+			log.Fatalf("failed to configure credential_acquisition: %v", err)
+		}
+		serverCA = backend
+	} else if cfg.Tacra != nil {
 		backend, err := tacra.New(*cfg.Tacra)
 		if err != nil {
 			log.Fatalf("failed to configure the TACRA backend: %v", err)

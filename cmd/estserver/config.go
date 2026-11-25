@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/globalsign/est/internal/cas"
 	"github.com/globalsign/est/internal/mockca"
 	"github.com/globalsign/est/internal/tacra"
 )
@@ -33,16 +34,19 @@ import (
 // (internal/tacra; estserver.json.example): one or the other, not both. A
 // configuration is decoded strictly: an unknown field is an error.
 type config struct {
-	MockCA              *mockCAConfig `json:"mock_ca,omitempty"`
-	TLS                 *tlsConfig    `json:"tls,omitempty"`
-	AllowedHosts        []string      `json:"allowed_hosts,omitempty"`
-	Attest              *attestConfig `json:"attest,omitempty"`
-	Tacra               *tacra.Config `json:"tacra,omitempty"` // the deployed verifiers and RATS Relying Parties, instead of the mock
-	HealthCheckPassword string        `json:"healthcheck_password"`
-	RateLimit           int           `json:"rate_limit"`
-	Timeout             int           `json:"timeout"`
-	Logfile             string        `json:"log_file"`
-	WireLog             string        `json:"wire_log,omitempty"` // every attest-* exchange, as it crossed the wire
+	MockCA       *mockCAConfig `json:"mock_ca,omitempty"`
+	TLS          *tlsConfig    `json:"tls,omitempty"`
+	AllowedHosts []string      `json:"allowed_hosts,omitempty"`
+	Attest       *attestConfig `json:"attest,omitempty"`
+	Tacra        *tacra.Config `json:"tacra,omitempty"` // the deployed verifiers and RATS Relying Parties, instead of the mock
+	// CredentialAcquisition makes the server host the CAS Server Plug-in of TACRA: it appraises, has the Credential
+	// Authority certify and seals the credentials of the Secret Vault itself, instead of the mock or of forwarding.
+	CredentialAcquisition *cas.Config `json:"credential_acquisition,omitempty"`
+	HealthCheckPassword   string      `json:"healthcheck_password"`
+	RateLimit             int         `json:"rate_limit"`
+	Timeout               int         `json:"timeout"`
+	Logfile               string      `json:"log_file"`
+	WireLog               string      `json:"wire_log,omitempty"` // every attest-* exchange, as it crossed the wire
 }
 
 // attestConfig contains the attested credential acquisition configuration.
@@ -90,6 +94,17 @@ func parseConfig(data []byte) (*config, error) {
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, errors.New("data after the configuration object")
+	}
+
+	if cfg.CredentialAcquisition != nil {
+		switch {
+		case cfg.Tacra != nil || cfg.MockCA != nil || cfg.Attest != nil:
+			return nil, errors.New("credential_acquisition does not mix with tacra or with the mock CA (mock_ca, attest): the server runs one of them")
+		case cfg.TLS == nil:
+			return nil, errors.New("no tls section: with credential_acquisition the certificates and the private key of the server are required")
+		case cfg.TLS.ListenAddr == "" || cfg.TLS.Certs == "" || cfg.TLS.Key == "":
+			return nil, errors.New("tls: listen_address, certificates and private_key are required")
+		}
 	}
 
 	if cfg.Tacra != nil {
