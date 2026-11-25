@@ -4,10 +4,12 @@ FROM golang:${GO_VERSION}-alpine AS builder
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/estserver ./cmd/estserver
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/estcasclient ./cmd/estcasclient
 
 FROM alpine:3.22
 RUN addgroup -S est && adduser -S -G est est
 COPY --from=builder /out/estserver /usr/local/bin/estserver
+COPY --from=builder /out/estcasclient /usr/local/bin/estcasclient
 USER est
 EXPOSE 8443
 ENTRYPOINT ["/usr/local/bin/estserver"]
