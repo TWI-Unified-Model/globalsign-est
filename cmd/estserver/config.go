@@ -29,10 +29,12 @@ import (
 )
 
 // config contains the EST server configuration. The server runs with the mock
-// CA of this fork (mock_ca, attest; transient when absent) or, with a tacra
+// CA of this fork (mock_ca, attest; transient when absent); or, with a tacra
 // section, with the TACRA backend that forwards to deployed verifiers and RATS Relying Parties
-// (internal/tacra; estserver.json.example): one or the other, not both. A
-// configuration is decoded strictly: an unknown field is an error.
+// (internal/tacra; estserver.json.example); or, with a credential_acquisition
+// section, with the backend that hosts the CAS Server Plug-in of TACRA
+// (internal/cas): one of the three, never two. A configuration is decoded
+// strictly: an unknown field is an error.
 type config struct {
 	MockCA       *mockCAConfig `json:"mock_ca,omitempty"`
 	TLS          *tlsConfig    `json:"tls,omitempty"`
