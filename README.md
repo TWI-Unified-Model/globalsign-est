@@ -145,7 +145,7 @@ Relying Party expects, in one of two modes.
 
 Every request is checked against the profile's syntax before anything else
 (`attest_syntax.go`); a request the profile does not describe is refused
-with 400 and a reason. The server runs with one of two backends.
+with 400 and a reason. The server runs with one of three backends.
 
 ### The mock backend: a mock CA, a mock TEE and a mock Verifier
 
@@ -241,3 +241,65 @@ binding, the sessions and the conduit in process, and the backend's answers
 when a Verifier or a RATS Relying Party cannot be reached; `internal/refvectors` checks the
 library's messages against the vectors a reference implementation recorded
 on Google Cloud SEV-SNP hardware.
+
+### The CAS Server Plug-in backend: a Verifier, a Credential Authority and a Secret Vault
+
+With a `credential_acquisition` section the server hosts the CAS Server
+Plug-in of TACRA, the `casserver` module of the TACRA repository
+(`internal/cas`). The server is then the Credential Acquisition System Server
+and the RATS Relying Party at once: it issues the Freshness Handle, sends the
+Evidence to a Verifier, verifies the Attestation Results and the binding of
+the key to the Evidence, has the configured Credential Authority certify the
+key of an Enrollment, and reads and seals the credential of a Retrieval. The
+keys are:
+
+- `tls`: required, with `listen_address`, `certificates` and `private_key`;
+  the resources are served over TLS 1.3.
+- `credential_acquisition`: the settings of the plug-in, in JSON, as
+  [its document](https://github.com/TWI-Unified-Model/tacra/blob/main/casserver/README.md#configuration)
+  describes them: `acceptable_evidence`, `verifier`, `target`, `secret_vault`
+  and `credential_authority`. A Target in enroll mode needs a
+  `credential_authority`: this server has no CA of its own.
+- `credential_acquisition.ca_certs`: the PEM chain of the Credential
+  Authority, returned at `/cacerts`.
+
+The section does not mix with `tacra`, `mock_ca` or `attest`: the server runs
+one backend. The classic resources of EST are not offered, so that an attested
+request is never answered by a classic operation; `/cacerts` answers when
+`ca_certs` is set. A refusal of the plug-in, a gRPC status, becomes the HTTP
+status of the profile with the same reason:
+
+| Refusal of the plug-in | HTTP status |
+|---|---|
+| `InvalidArgument` | 400 |
+| `NotFound` | 404 |
+| `PermissionDenied` | 403 |
+| `Unimplemented`: a Credential Type that the Target does not serve | 422 |
+| `ResourceExhausted` | 429 |
+| `Unavailable` | 503 |
+| any other | 500 |
+
+For the plug-in, Attestation Results that report another binding value are a
+failed Remote Attestation: the answer is 403, where the profile names 400.
+
+The tests of the backend (`internal/cas`) cover the refusals of a
+configuration and the mapping of the statuses. The demonstration in simulation
+of the TACRA repository (`readme_demo_simulation.md`) runs this backend with
+Veraison, step-ca and HashiCorp Vault.
+
+### The EST Client: `estcasclient`
+
+`cmd/estcasclient` is the CAS Client of the EST binding of TACRA. It serves
+the Credential Acquisition API (CAAPI) of TACRA to the CAI beside it, and
+carries each call to the EST server as `attest-initiate`, `attest-enroll` and
+`attest-retrieve`. It is a conduit: it holds no key of the Workload, appraises
+nothing and opens no container.
+
+| Environment | Meaning | Default |
+|---|---|---|
+| `EST_CLIENT_LISTEN` | the address of the CAAPI service | `:9090` |
+| `EST_SERVER` | the host and port of the EST server | `localhost:8443` |
+| `EST_SERVER_CA` | the file of the certificate under which the EST server serves TLS, PEM | required |
+
+Its tests run the three calls end to end against the mock backend. The image
+of the repository carries both commands, `estserver` and `estcasclient`.
